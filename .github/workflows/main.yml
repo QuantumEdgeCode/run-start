@@ -19,7 +19,7 @@ jobs:
         python-version: '3.11'  # 指定Python版本为3.11
 
     - name: Install dependencies
-      run: pip install efinance pandas  # 安装所需的Python依赖项
+      run: pip install efinance pandas openpyxl  # 安装所需的Python依赖项
 
     - name: Run Stock Data Collector
       run: python 当日股票单子流入数据分钟级y2logxlsx.py  # 运行你的Python脚本
