@@ -1,0 +1,24 @@
+name: Run Stock Data Collector
+
+on:
+  schedule:
+    - cron: '50 17 * * *'  # 每天北京时间下午5点50分执行一次
+
+jobs:
+  collect_stock_data:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v2
+
+    - name: Set up Python
+      uses: actions/setup-python@v2
+      with:
+        python-version: '3.11'  # 指定Python版本为3.11
+
+    - name: Install dependencies
+      run: pip install efinance pandas  # 安装所需的Python依赖项
+
+    - name: Run Stock Data Collector
+      run: python 当日股票单子流入数据分钟级y2logxlsx.py  # 运行你的Python脚本
