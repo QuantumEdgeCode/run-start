@@ -1,6 +1,7 @@
 name: Run Stock Data Collector
 
 on:
+  workflow_dispatch:  # 使用 workflow_dispatch 触发方式
   schedule:
     - cron: '50 17 * * *'  # 每天北京时间下午5点50分执行一次
 
