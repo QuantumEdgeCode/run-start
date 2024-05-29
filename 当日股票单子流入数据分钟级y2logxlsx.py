@@ -34,7 +34,7 @@ MAX_RETRIES = 3
 RETRY_INTERVALS = [3, 4, 5]
 
 # 读取股票代码列表
-with open('code-list/a240521.txt', 'r', encoding='utf-8') as file:
+with open('code-list/a240528.txt', 'r', encoding='utf-8') as file:
     stock_codes = [line.strip() for line in file]
 
 # 循环获取数据
