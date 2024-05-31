@@ -24,11 +24,27 @@ jobs:
     - name: Remove old data directory
       run: rm -rf ./data/us  # 删除 ./data/us 目录
 
+    - name: Get Start Time
+      id: get_start_time
+      run: echo "START_TIME=$(date -u '+%s')" >> $GITHUB_ENV
+
     - name: Run yfinance Stock Data Collector
       id: run_script
       run: |
         python 获取行情数据yu自定义2.py
       working-directory: ./  # 指定工作目录为./
+
+    - name: Get End Time and Duration
+      id: get_end_time
+      run: |
+        END_TIME=$(date -u '+%s')
+        DURATION=$((END_TIME - START_TIME))
+        EXECUTION_TIME=$(date -u -d @$START_TIME '+%Y-%m-%d %H:%M:%S UTC')
+        REPORT_DATE=$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S')
+        echo "END_TIME=$END_TIME" >> $GITHUB_ENV
+        echo "DURATION=$(date -u -d @$DURATION '+%H:%M:%S')" >> $GITHUB_ENV
+        echo "EXECUTION_TIME=$EXECUTION_TIME" >> $GITHUB_ENV
+        echo "REPORT_DATE=$REPORT_DATE" >> $GITHUB_ENV
 
     - name: Get IP Address
       id: get_ip
@@ -37,22 +53,6 @@ jobs:
         IP_ADDRESS=$(curl -s https://api64.ipify.org?format=json | jq -r '.ip')
         echo "IP_ADDRESS=$IP_ADDRESS" >> $GITHUB_ENV
         set -x
-
-    - name: Get Current Time
-      id: get_time
-      run: |
-        EXECUTION_TIME=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
-        REPORT_DATE=$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S')
-        echo "EXECUTION_TIME=$EXECUTION_TIME" >> $GITHUB_ENV
-        echo "REPORT_DATE=$REPORT_DATE" >> $GITHUB_ENV
-
-    - name: Calculate Workflow Duration
-      id: calculate_duration
-      run: |
-        START_TIME=$(date -u -d "$GITHUB_EVENT_WORKFLOW_DISPATCH_TIMESTAMP" '+%s')
-        END_TIME=$(date -u '+%s')
-        DURATION=$((END_TIME - START_TIME))
-        echo "WORKFLOW_DURATION=$(date -u -d @$DURATION '+%H:%M:%S')" >> $GITHUB_ENV
 
     - name: Send email notification
       uses: dawidd6/action-send-mail@v3
@@ -67,9 +67,8 @@ jobs:
         html_body: |
           数据获取状态: ${{ steps.run_script.outcome }}<br>
           工作流执行时间: ${{ env.EXECUTION_TIME }}<br>
-          工作流运行时长: ${{ env.WORKFLOW_DURATION }}<br>
+          工作流运行时长: ${{ env.DURATION }}<br>
           IP地址: ${{ env.IP_ADDRESS }}<br>
-          注意本行为北京时间UTC+8
 
     - name: Commit and push changes
       if: success()
