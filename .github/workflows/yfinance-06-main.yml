@@ -11,30 +11,37 @@ jobs:
     
     steps:
     - name: Checkout Repository
-      uses: actions/checkout@v3  # 使用最新的 v3 版本
+      # 使用 actions/checkout@v4 以更新到 Node.js 20
+      uses: actions/checkout@v4  
 
     - name: Set up Python
-      uses: actions/setup-python@v4  # 使用最新的 v4 版本
+      # 使用 actions/setup-python@v4 以更新到 Node.js 20
+      uses: actions/setup-python@v4
       with:
         python-version: '3.11'  # 指定Python版本为3.11
 
     - name: Install dependencies
-      run: pip install yfinance pandas openpyxl  # 安装所需的Python依赖项
+      # 安装所需的Python依赖项
+      run: pip install yfinance pandas openpyxl  
 
     - name: Remove old data directory
-      run: rm -rf ./data/us  # 删除 ./data/us 目录
+      # 删除旧的数据目录 ./data/us
+      run: rm -rf ./data/us  
 
     - name: Get Start Time
+      # 获取脚本开始运行时间并保存到环境变量 START_TIME 中
       id: get_start_time
       run: echo "START_TIME=$(date -u '+%s')" >> $GITHUB_ENV
 
     - name: Run yfinance Stock Data Collector
+      # 运行Python脚本获取股票数据
       id: run_script
       run: |
         python 获取行情数据yu自定义2.py
-      working-directory: ./  # 指定工作目录为./
+      working-directory: ./  # 指定工作目录为当前目录
 
     - name: Get End Time and Duration
+      # 获取脚本结束时间并计算运行时长，转换时间为北京时间
       id: get_end_time
       run: |
         END_TIME=$(date -u '+%s')
@@ -47,6 +54,7 @@ jobs:
         echo "REPORT_DATE=$REPORT_DATE" >> $GITHUB_ENV
 
     - name: Get IP Address
+      # 获取公共IP地址并保存到环境变量 IP_ADDRESS 中
       id: get_ip
       run: |
         set +x
@@ -55,22 +63,24 @@ jobs:
         set -x
 
     - name: Send email notification
+      # 发送包含数据获取状态、执行时间、运行时长和IP地址的邮件通知
       uses: dawidd6/action-send-mail@v3
       with:
         server_address: ${{ secrets.MAIL_ADDRESS }}
         server_port: ${{ secrets.MAIL_PORT }}
         username: ${{ secrets.MAIL_USERNAME }}
         password: ${{ secrets.MAIL_PASSWORD }}
-        subject: 通知UT ({{ env.REPORT_DATE }})
+        subject: 通知UT ({{ env.REPORT_DATE }})  # 指定北京时间作为邮件标题
         to: ${{ secrets.MAIL_TO }}
         from: 数据通知/UT
         html_body: |
           数据获取状态: ${{ steps.run_script.outcome }}<br>
           工作流执行时间: ${{ env.EXECUTION_TIME }}<br>
           工作流运行时长: ${{ env.DURATION }}<br>
-          IP地址: ${{ env.IP_ADDRESS }}<br>
+          IP地址: ${{ env.IP_ADDRESS }}
 
     - name: Commit and push changes
+      # 提交并推送更改到GitHub仓库，确保仅在脚本成功运行时执行
       if: success()
       run: |
         git config --global user.name 'github-actions[bot]'
