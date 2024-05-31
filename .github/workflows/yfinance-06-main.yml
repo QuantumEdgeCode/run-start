@@ -1,0 +1,83 @@
+name: Run yfinance Stock Data Collector
+
+on:
+  workflow_dispatch:  # 使用 workflow_dispatch 触发方式
+  schedule:
+    - cron: '0 0 * * *'  # 每天北京时间上午9点执行一次
+
+jobs:
+  collect_stock_data:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v3  # 使用最新的 v3 版本
+
+    - name: Set up Python
+      uses: actions/setup-python@v4  # 使用最新的 v4 版本
+      with:
+        python-version: '3.11'  # 指定Python版本为3.11
+
+    - name: Install dependencies
+      run: pip install yfinance pandas openpyxl  # 安装所需的Python依赖项
+
+    - name: Remove old data directory
+      run: rm -rf ./data/us  # 删除 ./data/us 目录
+
+    - name: Run yfinance Stock Data Collector
+      id: run_script
+      run: |
+        python 获取行情数据yu自定义2.py
+      working-directory: ./  # 指定工作目录为./
+
+    - name: Get IP Address
+      id: get_ip
+      run: |
+        set +x
+        IP_ADDRESS=$(curl -s https://api64.ipify.org?format=json | jq -r '.ip')
+        echo "IP_ADDRESS=$IP_ADDRESS" >> $GITHUB_ENV
+        set -x
+
+    - name: Get Current Time
+      id: get_time
+      run: |
+        EXECUTION_TIME=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
+        REPORT_DATE=$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S')
+        echo "EXECUTION_TIME=$EXECUTION_TIME" >> $GITHUB_ENV
+        echo "REPORT_DATE=$REPORT_DATE" >> $GITHUB_ENV
+
+    - name: Calculate Workflow Duration
+      id: calculate_duration
+      run: |
+        START_TIME=$(date -u -d "$GITHUB_EVENT_WORKFLOW_DISPATCH_TIMESTAMP" '+%s')
+        END_TIME=$(date -u '+%s')
+        DURATION=$((END_TIME - START_TIME))
+        echo "WORKFLOW_DURATION=$(date -u -d @$DURATION '+%H:%M:%S')" >> $GITHUB_ENV
+
+    - name: Send email notification
+      uses: dawidd6/action-send-mail@v3
+      with:
+        server_address: ${{ secrets.MAIL_ADDRESS }}
+        server_port: ${{ secrets.MAIL_PORT }}
+        username: ${{ secrets.MAIL_USERNAME }}
+        password: ${{ secrets.MAIL_PASSWORD }}
+        subject: 通知UT ({{ env.REPORT_DATE }})
+        to: ${{ secrets.MAIL_TO }}
+        from: 数据通知/UT
+        html_body: |
+          数据获取状态: ${{ steps.run_script.outcome }}<br>
+          工作流执行时间: ${{ env.EXECUTION_TIME }}<br>
+          工作流运行时长: ${{ env.WORKFLOW_DURATION }}<br>
+          IP地址: ${{ env.IP_ADDRESS }}<br>
+          注意本行为北京时间UTC+8
+
+    - name: Commit and push changes
+      if: success()
+      run: |
+        git config --global user.name 'github-actions[bot]'
+        git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+        git add .
+        git commit -m "Update stock data"
+        git push
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
