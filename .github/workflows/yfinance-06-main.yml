@@ -47,7 +47,7 @@ jobs:
         END_TIME=$(date -u '+%s')
         DURATION=$((END_TIME - START_TIME))
         EXECUTION_TIME=$(date -u -d @$START_TIME '+%Y-%m-%d %H:%M:%S UTC')
-        REPORT_DATE=$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S')
+        REPORT_DATE=$(TZ='Asia/Shanghai' date '+%Y-%m-%d %T')
         echo "END_TIME=$END_TIME" >> $GITHUB_ENV
         echo "DURATION=$(date -u -d @$DURATION '+%H:%M:%S')" >> $GITHUB_ENV
         echo "EXECUTION_TIME=$EXECUTION_TIME" >> $GITHUB_ENV
@@ -70,7 +70,7 @@ jobs:
         server_port: ${{ secrets.MAIL_PORT }}
         username: ${{ secrets.MAIL_USERNAME }}
         password: ${{ secrets.MAIL_PASSWORD }}
-        subject: 通知UT ({{ env.REPORT_DATE }})  # 指定北京时间作为邮件标题
+        subject: 通知UT (${{ env.REPORT_DATE }})  # 指定北京时间作为邮件标题
         to: ${{ secrets.MAIL_TO }}
         from: 数据通知/UT
         html_body: |
