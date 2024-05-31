@@ -11,10 +11,10 @@ jobs:
     
     steps:
     - name: Checkout Repository
-      uses: actions/checkout@v2
+      uses: actions/checkout@v3  # 使用最新的 v3 版本
 
     - name: Set up Python
-      uses: actions/setup-python@v2
+      uses: actions/setup-python@v4  # 使用最新的 v4 版本
       with:
         python-version: '3.11'  # 指定Python版本为3.11
 
@@ -24,3 +24,13 @@ jobs:
     - name: Run yfinance Stock Data Collector
       run: python 获取行情数据yu自定义2.py  # 运行你的Python脚本
       working-directory: ./  # 指定工作目录为./
+
+    - name: Commit and push changes
+      run: |
+        git config --global user.name 'github-actions[bot]'
+        git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+        git add .
+        git commit -m "Update stock data"
+        git push
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
