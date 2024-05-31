@@ -83,7 +83,7 @@ def main():
     # 硬编码的参数
     file_name = 'nasdaq-ok.txt'
     market = 'us'
-    interval = '1d'
+    interval = '1m'
     period = 'max'  # yfinance限制1分钟级别的最大周期为7天
     save_format = 'csv'
 
