@@ -23,3 +23,4 @@ jobs:
 
     - name: Run yfinance Stock Data Collector
       run: python 获取行情数据yu自定义2.py  # 运行你的Python脚本
+      working-directory: ./data  # 指定工作目录为./data
