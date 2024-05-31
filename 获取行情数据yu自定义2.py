@@ -81,7 +81,7 @@ def write_data(df, code, directory, format):
 def main():
     """主函数，获取股票数据并保存"""
     # 硬编码的参数
-    file_name = 'nasdaq-ok.txt'
+    file_name = 'test.txt'
     market = 'us'
     interval = '1m'
     period = 'max'  # yfinance限制1分钟级别的最大周期为7天
