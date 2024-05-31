@@ -19,7 +19,7 @@ jobs:
         python-version: '3.11'  # 指定Python版本为3.11
 
     - name: Install dependencies
-      run: pip install yfinance pandas openpyxl  # 安装所需的Python依赖项
+      run: pip install yfinance pandas  # 安装所需的Python依赖项
 
     - name: Run yfinance Stock Data Collector
       run: python 获取行情数据yu自定义2.py  # 运行你的Python脚本
