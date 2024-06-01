@@ -93,7 +93,7 @@ def load_market_data(file_path):
 def main():
     """主函数，获取股票数据并保存"""
     # 固定参数
-    interval = '1d'
+    interval = '1m'
     period = 'max'
     save_format = 'csv'
 
