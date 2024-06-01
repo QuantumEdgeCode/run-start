@@ -1,0 +1,26 @@
+[
+    {
+        "id": 1,
+        "market": "us",
+        "file_name": "nasdaq-ok.txt",
+        "interval": "1m",
+        "period": "max",
+        "save_format": "csv"
+    },
+    {
+        "id": 2,
+        "market": "krx",
+        "file_name": "krx-yahoo517.txt",
+        "interval": "1m",
+        "period": "max",
+        "save_format": "csv"
+    },
+    {
+        "id": 3,
+        "market": "sgx",
+        "file_name": "sgx-yahoo.txt",
+        "interval": "1m",
+        "period": "max",
+        "save_format": "csv"
+    }
+]
