@@ -1,3 +1,4 @@
+#2024/06/01 12:57:00 GMT+08:00
 name: Run yfinance Stock Data Collector
 
 on:
@@ -15,8 +16,8 @@ jobs:
       uses: actions/checkout@v4  
 
     - name: Set up Python
-      # 使用 actions/setup-python@v4 以更新到 Node.js 20
-      uses: actions/setup-python@v4
+      # 使用 actions/setup-python@v4.6.1 以更新到 Node.js 20
+      uses: actions/setup-python@v4.6.1
       with:
         python-version: '3.11'  # 指定Python版本为3.11
 
@@ -25,8 +26,8 @@ jobs:
       run: pip install yfinance pandas openpyxl  
 
     - name: Remove old data directory
-      # 删除旧的数据目录 ./data/us
-      run: rm -rf ./data/us  
+      # 删除旧的数据目录 ./data
+      run: rm -rf ./data
 
     - name: Get Start Time
       # 获取脚本开始运行时间并保存到环境变量 START_TIME 中
@@ -37,7 +38,7 @@ jobs:
       # 运行Python脚本获取股票数据
       id: run_script
       run: |
-        python 获取行情数据yuk.py
+        python 获取行情数据yu自定义2.py
       working-directory: ./  # 指定工作目录为当前目录
 
     - name: Get End Time and Duration
