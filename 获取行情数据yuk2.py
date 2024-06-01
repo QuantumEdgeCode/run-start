@@ -1,4 +1,4 @@
-#2024/06/01 11:34:07 GMT+08:00
+#2024/06/01 12:07:31 GMT+08:00
 import yfinance as yf
 import os
 import logging
@@ -92,19 +92,21 @@ def load_market_data(file_path):
 
 def main():
     """主函数，获取股票数据并保存"""
-    # 固定参数
-    interval = '1m'
-    period = 'max'
-    save_format = 'csv'
-
     # 加载市场数据
-    market_data = load_market_data('markets.json')
+    market_data = load_market_data('markets-y2.json')
 
     # 遍历市场数据
     for market_info in market_data:
-        market = market_info['market']
-        file_name = market_info['file_name']
-        
+        market = market_info.get('market')
+        file_name = market_info.get('file_name')
+        interval = market_info.get('interval', '1d')
+        period = market_info.get('period', 'max')
+        save_format = market_info.get('save_format', 'csv')  # 默认为 'csv'
+
+        if not market or not file_name:
+            print(f"缺少必要信息：market 或 file_name")
+            continue
+
         # 读取文件路径
         current_date = get_current_date()
         file_path = f"./{file_name}"
