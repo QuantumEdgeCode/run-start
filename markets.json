@@ -1,0 +1,5 @@
+[
+    {"id": 1, "market": "us", "file_name": "nasdaq-ok.txt"},
+    {"id": 2, "market": "krx", "file_name": "krx-yahoo517.txt"},
+    {"id": 3, "market": "sgx", "file_name": "sgx-yahoo.txt"}
+]
