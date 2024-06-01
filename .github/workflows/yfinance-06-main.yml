@@ -39,7 +39,7 @@ jobs:
       id: run_script
       run: |
         python 获取行情数据yu自定义2.py
-      working-directory: ./E  # 指定工作目录为当前目录
+      working-directory: ./  # 指定工作目录为当前目录
 
     - name: Get End Time and Duration
       # 获取脚本结束时间并计算运行时长，转换时间为北京时间
