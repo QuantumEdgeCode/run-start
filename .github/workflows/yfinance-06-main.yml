@@ -3,7 +3,7 @@ name: Run yfinance Stock Data Collector
 on:
   workflow_dispatch:  # 使用 workflow_dispatch 触发方式
   schedule:
-    - cron: '0 0 * * *'  # 每天北京时间上午9点执行一次
+    - cron: '0 1 * * 6'  # 每周六北京时间上午9点执行一次
 
 jobs:
   collect_stock_data:
@@ -70,7 +70,7 @@ jobs:
         server_port: ${{ secrets.MAIL_PORT }}
         username: ${{ secrets.MAIL_USERNAME }}
         password: ${{ secrets.MAIL_PASSWORD }}
-        subject: 通知UT (${{ env.REPORT_DATE }})  # 指定北京时间作为邮件标题
+        subject: 通知UT ({{ env.REPORT_DATE }})  # 指定北京时间作为邮件标题
         to: ${{ secrets.MAIL_TO }}
         from: 数据通知/UT
         html_body: |
