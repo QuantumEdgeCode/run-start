@@ -30,5 +30,21 @@
         "interval": "1m",
         "period": "max",
         "save_format": "csv"
+    },
+        {
+        "id": 5,
+        "market": "tw",
+        "file_name": "tw_yahoo.txt",
+        "interval": "1m",
+        "period": "max",
+        "save_format": "csv"
+    },
+    {
+        "id": 6,
+        "market": "jp",
+        "file_name": "jp-yahoo.txt",
+        "interval": "1m",
+        "period": "max",
+        "save_format": "csv"
     }
 ]
