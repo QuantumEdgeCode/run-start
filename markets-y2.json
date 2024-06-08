@@ -2,7 +2,7 @@
     {
         "id": 1,
         "market": "us",
-        "file_name": "nasdaq-ok.txt",
+        "file_name": "nasdaq606.txt",
         "interval": "1m",
         "period": "max",
         "save_format": "csv"
