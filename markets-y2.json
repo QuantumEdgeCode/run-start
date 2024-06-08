@@ -22,5 +22,13 @@
         "interval": "1m",
         "period": "max",
         "save_format": "csv"
+    },
+    {
+        "id": 4,
+        "market": "us-etf",
+        "file_name": "nasdaq606etf.txt",
+        "interval": "1m",
+        "period": "max",
+        "save_format": "csv"
     }
 ]
