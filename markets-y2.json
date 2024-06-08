@@ -26,7 +26,7 @@
     {
         "id": 4,
         "market": "tw",
-        "file_name": "tw_yahoo.txt",
+        "file_name": "two_yahoo.txt",
         "interval": "1m",
         "period": "max",
         "save_format": "csv"
