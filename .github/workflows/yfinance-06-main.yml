@@ -1,4 +1,4 @@
-#2024/06/01 13:27:58 GMT+08:00
+#2024/06/18 18:43:44 GMT+08:00
 name: Run yfinance Stock Data Collector
 
 on:
@@ -26,8 +26,8 @@ jobs:
       run: pip install yfinance pandas openpyxl  
 
     - name: Remove old data directory
-      # 删除旧的数据目录 ./data
-      run: rm -rf ./data
+      # 删除旧的数据目录 ./data/
+      run: rm -rf ./data/  
 
     - name: Get Start Time
       # 获取脚本开始运行时间并保存到环境变量 START_TIME 中
@@ -39,7 +39,7 @@ jobs:
       id: run_script
       run: |
         python 获取行情数据yuk2修正1.py
-      working-directory: ./  # 指定工作目录为当前目录
+      working-directory: ./  # 指定工作目录为当前目录  
 
     - name: Get End Time and Duration
       # 获取脚本结束时间并计算运行时长，转换时间为北京时间
@@ -57,6 +57,7 @@ jobs:
     - name: Get IP Address
       # 获取公共IP地址并保存到环境变量 IP_ADDRESS 中
       id: get_ip
+      continue-on-error: true  # 确保即使获取IP地址失败，工作流也会继续执行
       run: |
         set +x
         IP_ADDRESS=$(curl -s https://api64.ipify.org?format=json | jq -r '.ip')
@@ -79,6 +80,7 @@ jobs:
           工作流执行时间: ${{ env.EXECUTION_TIME }}<br>
           工作流运行时长: ${{ env.DURATION }}<br>
           IP地址: ${{ env.IP_ADDRESS }}
+      continue-on-error: true  # 确保即使邮件发送失败，工作流也会继续执行
 
     - name: Commit and push changes
       # 提交并推送更改到GitHub仓库，确保仅在脚本成功运行时执行
