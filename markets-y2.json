@@ -1,30 +1,14 @@
 [
     {
         "id": 1,
-        "market": "us",
-        "file_name": "us24607.txt",
+        "market": "hk",
+        "file_name": "hk-yahoo24618.txt",
         "interval": "1m",
         "period": "max",
         "save_format": "csv"
     },
     {
         "id": 2,
-        "market": "krx",
-        "file_name": "krx-yahoo517.txt",
-        "interval": "1m",
-        "period": "max",
-        "save_format": "csv"
-    },
-    {
-        "id": 3,
-        "market": "sgx",
-        "file_name": "sgx-yahoo.txt",
-        "interval": "1m",
-        "period": "max",
-        "save_format": "csv"
-    },
-    {
-        "id": 4,
         "market": "tw",
         "file_name": "two_yahoo.txt",
         "interval": "1m",
@@ -32,11 +16,131 @@
         "save_format": "csv"
     },
     {
-        "id": 5,
-        "market": "jp",
-        "file_name": "jp-yahoo.txt",
+        "id": 3,
+        "market": "krx",
+        "file_name": "krx-yahoo517.txt",
         "interval": "1m",
         "period": "max",
+        "save_format": "csv"
+    },
+    {
+        "id": 4,
+        "market": "jp",
+        "file_name": "jp-yahoo231208.txt",
+        "interval": "1m",
+        "period": "max",
+        "save_format": "csv"
+    },
+    {
+        "id": 5,
+        "market": "us",
+        "file_name": "us24607.txt",
+        "interval": "1m",
+        "period": "max",
+        "save_format": "csv"
+    },
+    {
+        "id": 6,
+        "market": "sgx",
+        "file_name": "sgx-yahoo.txt",
+        "interval": "1m",
+        "period": "max",
+        "save_format": "csv"
+    },
+    {
+        "id": 1,
+        "market": "hk",
+        "file_name": "hk-yahoo24618.txt",
+        "interval": "5m",
+        "period": "1mo",
+        "save_format": "csv"
+    },
+    {
+        "id": 2,
+        "market": "tw",
+        "file_name": "two_yahoo.txt",
+        "interval": "5m",
+        "period": "1mo",
+        "save_format": "csv"
+    },
+    {
+        "id": 3,
+        "market": "krx",
+        "file_name": "krx-yahoo517.txt",
+        "interval": "5m",
+        "period": "1mo",
+        "save_format": "csv"
+    },
+    {
+        "id": 4,
+        "market": "jp",
+        "file_name": "jp-yahoo231208.txt",
+        "interval": "5m",
+        "period": "1mo",
+        "save_format": "csv"
+    },
+    {
+        "id": 5,
+        "market": "us",
+        "file_name": "us24607.txt",
+        "interval": "5m",
+        "period": "1mo",
+        "save_format": "csv"
+    },
+    {
+        "id": 6,
+        "market": "sgx",
+        "file_name": "sgx-yahoo.txt",
+        "interval": "5m",
+        "period": "1mo",
+        "save_format": "csv"
+    }
+    {
+        "id": 1,
+        "market": "hk",
+        "file_name": "hk-yahoo24618.txt",
+        "interval": "1h",
+        "period": "2y",
+        "save_format": "csv"
+    },
+    {
+        "id": 2,
+        "market": "tw",
+        "file_name": "two_yahoo.txt",
+        "interval": "1h",
+        "period": "2y",
+        "save_format": "csv"
+    },
+    {
+        "id": 3,
+        "market": "krx",
+        "file_name": "krx-yahoo517.txt",
+        "interval": "1h",
+        "period": "2y",
+        "save_format": "csv"
+    },
+    {
+        "id": 4,
+        "market": "jp",
+        "file_name": "jp-yahoo231208.txt",
+        "interval": "1h",
+        "period": "2y",
+        "save_format": "csv"
+    },
+    {
+        "id": 5,
+        "market": "us",
+        "file_name": "us24607.txt",
+        "interval": "1h",
+        "period": "2y",
+        "save_format": "csv"
+    },
+    {
+        "id": 6,
+        "market": "sgx",
+        "file_name": "sgx-yahoo.txt",
+        "interval": "1h",
+        "period": "2y",
         "save_format": "csv"
     }
 ]
