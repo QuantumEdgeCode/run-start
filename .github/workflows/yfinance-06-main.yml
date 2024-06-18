@@ -38,7 +38,7 @@ jobs:
       # 运行Python脚本获取股票数据
       id: run_script
       run: |
-        python 获取行情数据yuk2.py
+        python 获取行情数据yuk2修正1.py
       working-directory: ./  # 指定工作目录为当前目录
 
     - name: Get End Time and Duration
