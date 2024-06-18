@@ -1,4 +1,4 @@
-#2024/06/01 12:07:31 GMT+08:00
+#2024/06/18 16:00:08 GMT+08:00
 import yfinance as yf
 import os
 import logging
@@ -10,7 +10,7 @@ import time
 
 # 初始化会话
 session = Session()
-session.headers['User-agent'] = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.107 Safari/537.36'
+session.headers['User-agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'
 
 def get_current_date():
     """获取当前日期"""
@@ -97,15 +97,11 @@ def main():
 
     # 遍历市场数据
     for market_info in market_data:
-        market = market_info.get('market')
-        file_name = market_info.get('file_name')
-        interval = market_info.get('interval', '1d')
-        period = market_info.get('period', 'max')
-        save_format = market_info.get('save_format', 'csv')  # 默认为 'csv'
-
-        if not market or not file_name:
-            print(f"缺少必要信息：market 或 file_name")
-            continue
+        market = market_info['market']
+        file_name = market_info['file_name']
+        interval = market_info['interval']
+        period = market_info['period']
+        save_format = market_info['save_format']
 
         # 读取文件路径
         current_date = get_current_date()
@@ -118,8 +114,12 @@ def main():
             file_path = file_path_in_code_list
 
         # 读取股票代码
-        with open(file_path, "r", encoding="utf-8") as file:
-            tickers = [line.strip() for line in file]
+        try:
+            with open(file_path, "r", encoding="utf-8") as file:
+                tickers = [line.strip() for line in file]
+        except FileNotFoundError:
+            print(f"文件 {file_path} 不存在，跳过此市场")
+            continue
 
         # 设置数据目录和日志目录
         base_data_directory = f'./data/{market}/{interval}/{current_date}'
