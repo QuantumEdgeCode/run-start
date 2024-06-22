@@ -94,7 +94,7 @@
         "interval": "5m",
         "period": "1mo",
         "save_format": "csv"
-    }
+    },
     {
         "id": 1,
         "market": "hk",
