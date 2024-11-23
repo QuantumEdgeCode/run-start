@@ -10,7 +10,7 @@
     {
         "id": 3,
         "market": "krx",
-        "file_name": "krx-yahoo517.txt",
+        "file_name": "krx-yahoo.txt",
         "interval": "1m",
         "period": "max",
         "save_format": "csv"
@@ -50,7 +50,7 @@
     {
         "id": 3,
         "market": "krx",
-        "file_name": "krx-yahoo517.txt",
+        "file_name": "krx-yahoo.txt",
         "interval": "5m",
         "period": "1mo",
         "save_format": "csv"
@@ -90,7 +90,7 @@
     {
         "id": 3,
         "market": "krx",
-        "file_name": "krx-yahoo517.txt",
+        "file_name": "krx-yahoo.txt",
         "interval": "1h",
         "period": "2y",
         "save_format": "csv"
