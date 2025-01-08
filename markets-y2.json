@@ -1,0 +1,98 @@
+[
+    {
+        "id": 2,
+        "market": "tw",
+        "file_name": "two_yahoo.txt",
+        "interval": "1m",
+        "period": "max",
+        "save_format": "csv"
+    },
+    {
+        "id": 3,
+        "market": "krx",
+        "file_name": "krx-yahoo.txt",
+        "interval": "1m",
+        "period": "max",
+        "save_format": "csv"
+    },
+    {
+        "id": 4,
+        "market": "jp",
+        "file_name": "jp-yahoo.txt",
+        "interval": "1m",
+        "period": "max",
+        "save_format": "csv"
+    },
+    {
+        "id": 6,
+        "market": "sgx",
+        "file_name": "sgx-yahoo.txt",
+        "interval": "1m",
+        "period": "max",
+        "save_format": "csv"
+    },
+    {
+        "id": 2,
+        "market": "tw",
+        "file_name": "two_yahoo.txt",
+        "interval": "5m",
+        "period": "1mo",
+        "save_format": "csv"
+    },
+    {
+        "id": 3,
+        "market": "krx",
+        "file_name": "krx-yahoo.txt",
+        "interval": "5m",
+        "period": "1mo",
+        "save_format": "csv"
+    },
+    {
+        "id": 4,
+        "market": "jp",
+        "file_name": "jp-yahoo.txt",
+        "interval": "5m",
+        "period": "1mo",
+        "save_format": "csv"
+    },
+    {
+        "id": 6,
+        "market": "sgx",
+        "file_name": "sgx-yahoo.txt",
+        "interval": "5m",
+        "period": "1mo",
+        "save_format": "csv"
+    },
+    {
+        "id": 2,
+        "market": "tw",
+        "file_name": "two_yahoo.txt",
+        "interval": "1h",
+        "period": "2y",
+        "save_format": "csv"
+    },
+    {
+        "id": 3,
+        "market": "krx",
+        "file_name": "krx-yahoo.txt",
+        "interval": "1h",
+        "period": "2y",
+        "save_format": "csv"
+    },
+    {
+        "id": 4,
+        "market": "jp",
+        "file_name": "jp-yahoo.txt",
+        "interval": "1h",
+        "period": "2y",
+        "save_format": "csv"
+    },
+    {
+        "id": 6,
+        "market": "sgx",
+        "file_name": "sgx-yahoo.txt",
+        "interval": "1h",
+        "period": "2y",
+        "save_format": "csv"
+    }
+]
