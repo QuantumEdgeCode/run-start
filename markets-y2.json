@@ -12,7 +12,7 @@
         "market": "krx",
         "file_name": "krx-yahoo.txt",
         "interval": "1m",
-        "period": "5d",
+        "period": "max",
         "save_format": "csv"
     },
     {
@@ -36,7 +36,7 @@
         "market": "sgx",
         "file_name": "sgx-yahoo.txt",
         "interval": "1m",
-        "period": "5d",
+        "period": "max",
         "save_format": "csv"
     }
 ]
