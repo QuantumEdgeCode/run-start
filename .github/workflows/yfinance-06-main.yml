@@ -2,7 +2,7 @@
 name: Run yfinance Stock Data Collector
 
 on:
-  workflow_dispatch:  # 使用 workflow_dispatch 触发方式
+  #workflow_dispatch:  # 使用 workflow_dispatch 触发方式
   schedule:
     - cron: '0 1 * * 6'  # 每周六北京时间上午9点执行一次
 
