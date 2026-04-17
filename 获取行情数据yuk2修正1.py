@@ -145,7 +145,7 @@ def main():
                     fail_count += 1
                 
                 # 每个股票之间短暂等待，避免请求过快
-                time.sleep(0.5)
+                time.sleep(0.2)
             
             print(f"\n{market} 市场处理完成：成功 {success_count} 只，失败 {fail_count} 只")
             time.sleep(3)  # 市场间等待
