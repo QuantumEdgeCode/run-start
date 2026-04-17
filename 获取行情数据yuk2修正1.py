@@ -5,30 +5,31 @@ import logging
 import json
 from datetime import datetime
 import pandas as pd
-from requests import Session
 import time
-
-# 初始化会话
-session = Session()
-session.headers['User-agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'
 
 def get_current_date():
     """获取当前日期"""
     return datetime.now().strftime('%Y-%m-%d')
 
 def get_stock_data(ticker, period, interval):
-    """获取股票数据，失败时重试一次"""
-    for attempt in range(1):  # 尝试1次
+    """获取股票数据，失败时重试"""
+    for attempt in range(3):  # 增加到3次重试
         try:
-            stock = yf.Ticker(ticker, session=session)  # 使用会话
+            # ===== 关键修复：删除 session 参数，让 yfinance 自动处理 TLS 指纹 =====
+            stock = yf.Ticker(ticker)
             stock_df = stock.history(period=period, interval=interval)
+            
             if stock_df.empty:
                 raise ValueError(f"{ticker}: No data found, symbol may be delisted")
             return stock_df
+            
         except Exception as e:
-            error_message = f"尝试获取 {ticker} 数据失败，尝试次数：{attempt + 1}。错误信息：{str(e)}"
+            error_message = f"尝试获取 {ticker} 数据失败，尝试次数：{attempt + 1}/3。错误信息：{str(e)}"
             logging.error(error_message)
             print(error_message)
+            
+            if attempt < 2:  # 最后一次不等待
+                time.sleep(3)  # 等待3秒后重试
     return None
 
 def setup_logging(log_dir, market):
@@ -36,24 +37,19 @@ def setup_logging(log_dir, market):
     current_date = get_current_date()
     log_file = os.path.join(log_dir, f"{market}_{current_date}_log.txt")
 
-    # 获取或创建一个新的日志记录器
     logger = logging.getLogger(market)
     logger.setLevel(logging.INFO)
 
-    # 创建文件处理器
     file_handler = logging.FileHandler(log_file, 'a', 'utf-8')
     file_handler.setLevel(logging.INFO)
 
-    # 创建流处理器
     stream_handler = logging.StreamHandler()
-    stream_handler.setLevel(logging.WARNING)  # 设置为WARNING，以减少控制台输出
+    stream_handler.setLevel(logging.WARNING)
 
-    # 设置日志格式
     formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
     file_handler.setFormatter(formatter)
     stream_handler.setFormatter(formatter)
 
-    # 如果日志记录器没有处理器，则添加处理器
     if not logger.handlers:
         logger.addHandler(file_handler)
         logger.addHandler(stream_handler)
@@ -77,7 +73,7 @@ def write_data(df, code, directory, format):
     try:
         os.makedirs(directory, exist_ok=True)
     except FileExistsError:
-        pass  # 目录已经存在，忽略该错误
+        pass
     filename = f"{directory}/{code}.{format}"
     unique_filename = get_unique_filename(filename)
     if format == 'csv':
@@ -95,7 +91,6 @@ def main():
     # 加载市场数据
     market_data = load_market_data('markets-y2.json')
 
-    # 遍历市场数据
     for market_info in market_data:
         market = market_info['market']
         file_name = market_info['file_name']
@@ -103,7 +98,11 @@ def main():
         period = market_info['period']
         save_format = market_info['save_format']
 
-        # 读取文件路径
+        # ===== 建议修复：1分钟线数据 period 不能超过 "7d" =====
+        if interval == "1m" and period == "max":
+            print(f"警告：{market} 市场使用 interval='1m' 但 period='max'，已自动修正为 '7d'")
+            period = "7d"
+
         current_date = get_current_date()
         file_path = f"./{file_name}"
         if not os.path.exists(file_path):
@@ -113,38 +112,46 @@ def main():
                 continue
             file_path = file_path_in_code_list
 
-        # 读取股票代码
         try:
             with open(file_path, "r", encoding="utf-8") as file:
-                tickers = [line.strip() for line in file]
+                tickers = [line.strip() for line in file if line.strip()]
         except FileNotFoundError:
             print(f"文件 {file_path} 不存在，跳过此市场")
             continue
 
-        # 设置数据目录和日志目录
         base_data_directory = f'./data/{market}/{interval}/{current_date}'
         os.makedirs(base_data_directory, exist_ok=True)
         
-        # 设置日志记录器
         logger = setup_logging(base_data_directory, market)
         logger.info(f"数据目录: {base_data_directory}")
-        print(f"数据目录: {base_data_directory}")  # 控制台输出数据目录
+        print(f"数据目录: {base_data_directory}")
+        print(f"开始处理 {market} 市场，共 {len(tickers)} 只股票")
 
-        # 获取数据并保存
+        success_count = 0
+        fail_count = 0
+
         try:
             for ticker in tickers:
                 stock_data = get_stock_data(ticker, period=period, interval=interval)
                 if stock_data is not None:
                     saved_file = write_data(stock_data, ticker, base_data_directory, save_format)
                     logger.info(f"{ticker} 的数据成功保存到 {saved_file}")
-                    print(f"{ticker} 的数据成功保存到 {saved_file}")  # 控制台输出保存文件信息
+                    print(f"✓ {ticker} 保存成功")
+                    success_count += 1
                 else:
-                    error_message = f"未能检索 {ticker} 的数据"
-                    logger.error(error_message)
-            time.sleep(5)  # 每个市场数据处理完后等待5秒
+                    logger.error(f"未能检索 {ticker} 的数据")
+                    print(f"✗ {ticker} 获取失败")
+                    fail_count += 1
+                
+                # 每个股票之间短暂等待，避免请求过快
+                time.sleep(0.5)
+            
+            print(f"\n{market} 市场处理完成：成功 {success_count} 只，失败 {fail_count} 只")
+            time.sleep(3)  # 市场间等待
+            
         except KeyboardInterrupt:
             logger.warning("数据获取过程被中断")
-            print("数据获取过程被中断")  # 控制台输出中断信息
+            print("\n数据获取过程被中断")
             break
 
 if __name__ == "__main__":
