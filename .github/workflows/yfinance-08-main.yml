@@ -1,0 +1,354 @@
+#2024/06/18 18:43:44 GMT+08:00
+name: Run yfinance Stock Data Collector
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 1 * * 6'  # 每周六北京时间上午9点执行一次
+
+jobs:
+  collect_stock_data:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # 必须：用于创建 Release 和上传文件
+    
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # 获取完整历史，用于生成版本号
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        pip install yfinance pandas openpyxl curl_cffi
+        sudo apt-get install -y jq zip
+
+    - name: Remove old data directory
+      run: rm -rf ./data/  
+
+    # ===== 生成版本号 =====
+    - name: Generate version tag
+      id: version
+      run: |
+        BEIJING_DATE=$(TZ='Asia/Shanghai' date '+%Y%m%d')
+        RUN_NUMBER=${{ github.run_number }}
+        VERSION="v${BEIJING_DATE}-${RUN_NUMBER}"
+        echo "VERSION=$VERSION" >> $GITHUB_ENV
+        echo "RELEASE_NAME=Stock Data ${VERSION}" >> $GITHUB_ENV
+        echo "BEIJING_DATE=$BEIJING_DATE" >> $GITHUB_ENV
+
+    - name: Get Start Time
+      id: get_start_time
+      run: |
+        START_TIME=$(date -u '+%s')
+        echo "START_TIME=$START_TIME" >> $GITHUB_ENV
+        BEIJING_TIME=$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')
+        echo "BEIJING_TIME=$BEIJING_TIME" >> $GITHUB_ENV
+
+    - name: Create logs directory
+      run: mkdir -p ./logs
+
+    # ===== 运行数据采集脚本 =====
+    - name: Run yfinance Stock Data Collector
+      id: run_script
+      run: |
+        # 运行脚本并同时输出到日志文件
+        python 获取行情数据yuk2修正1.py 2>&1 | tee ./logs/script_execution.log
+        # 保存退出码
+        echo "EXIT_CODE=${PIPESTATUS[0]}" >> $GITHUB_ENV
+      working-directory: ./
+
+    # ===== 收集工作流元信息 =====
+    - name: Collect workflow metadata
+      if: always()
+      run: |
+        cat > ./logs/workflow_info.json << EOF
+        {
+          "workflow_name": "${{ github.workflow }}",
+          "run_id": "${{ github.run_id }}",
+          "run_number": "${{ github.run_number }}",
+          "run_attempt": "${{ github.run_attempt }}",
+          "repository": "${{ github.repository }}",
+          "branch": "${{ github.ref_name }}",
+          "commit_sha": "${{ github.sha }}",
+          "triggered_by": "${{ github.event_name }}",
+          "execution_time_utc": "$(date -u '+%Y-%m-%d %H:%M:%S')",
+          "execution_time_beijing": "${{ env.BEIJING_TIME }}",
+          "script_exit_code": "${{ env.EXIT_CODE }}",
+          "script_outcome": "${{ steps.run_script.outcome }}",
+          "run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+        }
+        EOF
+        
+        # 生成可读的摘要文件
+        cat > ./logs/README.txt << EOF
+        ============================================
+        Stock Data Collector - Workflow Summary
+        ============================================
+        
+        Version: ${{ env.VERSION }}
+        Generated: ${{ env.BEIJING_TIME }} (Beijing Time)
+        
+        --- Workflow Info ---
+        Workflow: ${{ github.workflow }}
+        Run ID: ${{ github.run_id }}
+        Run Number: ${{ github.run_number }}
+        Repository: ${{ github.repository }}
+        Branch: ${{ github.ref_name }}
+        Commit: ${{ github.sha }}
+        
+        --- Execution Status ---
+        Script Outcome: ${{ steps.run_script.outcome }}
+        Exit Code: ${{ env.EXIT_CODE }}
+        
+        --- Links ---
+        Workflow Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        
+        --- Files in this release ---
+        - stock_data_${{ env.VERSION }}.zip: 采集的股票数据 (CSV文件)
+        - workflow_logs_${{ env.VERSION }}.zip: 完整的工作流日志
+        
+        ============================================
+        EOF
+
+    # ===== 获取 IP 地址 =====
+    - name: Get IP Address
+      id: get_ip
+      continue-on-error: true
+      run: |
+        set +x
+        IP_ADDRESS=$(curl -s https://api64.ipify.org?format=json | jq -r '.ip // "无法获取"')
+        echo "IP_ADDRESS=$IP_ADDRESS" >> $GITHUB_ENV
+        set -x
+
+    # ===== 计算运行时长 =====
+    - name: Get End Time and Duration
+      id: get_end_time
+      if: always()
+      run: |
+        END_TIME=$(date -u '+%s')
+        DURATION=$((END_TIME - START_TIME))
+        HOURS=$((DURATION / 3600))
+        MINUTES=$(((DURATION % 3600) / 60))
+        SECONDS=$((DURATION % 60))
+        DURATION_FORMATTED=$(printf "%02d:%02d:%02d" $HOURS $MINUTES $SECONDS)
+        
+        echo "END_TIME=$END_TIME" >> $GITHUB_ENV
+        echo "DURATION=$DURATION_FORMATTED" >> $GITHUB_ENV
+
+    # ===== 打包数据文件 =====
+    - name: Package stock data
+      if: always()
+      run: |
+        if [ -d "./data" ] && [ "$(ls -A ./data 2>/dev/null)" ]; then
+          echo "正在打包股票数据..."
+          zip -r stock_data_${{ env.VERSION }}.zip ./data/ -x "*.git*"
+          DATA_SIZE=$(du -h stock_data_${{ env.VERSION }}.zip | cut -f1)
+          echo "DATA_SIZE=$DATA_SIZE" >> $GITHUB_ENV
+          echo "HAS_DATA=true" >> $GITHUB_ENV
+        else
+          echo "警告: 没有数据文件可打包"
+          echo "HAS_DATA=false" >> $GITHUB_ENV
+          echo "DATA_SIZE=0" >> $GITHUB_ENV
+        fi
+
+    # ===== 打包日志文件 =====
+    - name: Package logs
+      if: always()
+      run: |
+        echo "正在打包日志文件..."
+        zip -r workflow_logs_${{ env.VERSION }}.zip ./logs/
+        LOG_SIZE=$(du -h workflow_logs_${{ env.VERSION }}.zip | cut -f1)
+        echo "LOG_SIZE=$LOG_SIZE" >> $GITHUB_ENV
+
+    # ===== 创建 Release 并上传文件 =====
+    - name: Create Release and Upload Assets
+      id: create_release
+      if: always()
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ env.VERSION }}
+        name: ${{ env.RELEASE_NAME }}
+        body_path: ./logs/README.txt
+        draft: false
+        prerelease: false
+        files: |
+          stock_data_${{ env.VERSION }}.zip
+          workflow_logs_${{ env.VERSION }}.zip
+        fail_on_unmatched_files: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    # ===== 获取 Release URL =====
+    - name: Get Release URL
+      if: always()
+      run: |
+        RELEASE_URL="${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ env.VERSION }}"
+        echo "RELEASE_URL=$RELEASE_URL" >> $GITHUB_ENV
+
+    # ===== 发送邮件通知 =====
+    - name: Send email notification
+      if: always()
+      uses: dawidd6/action-send-mail@v3
+      with:
+        server_address: ${{ secrets.MAIL_ADDRESS }}
+        server_port: ${{ secrets.MAIL_PORT }}
+        username: ${{ secrets.MAIL_USERNAME }}
+        password: ${{ secrets.MAIL_PASSWORD }}
+        subject: 通知UT (${{ env.REPORT_DATE || env.BEIJING_DATE }}) - ${{ steps.run_script.outcome == 'success' && '✅成功' || '❌失败' }}
+        to: ${{ secrets.MAIL_TO }}
+        from: 数据通知/UT
+        # ===== 附件：日志文件 =====
+        attachments: workflow_logs_${{ env.VERSION }}.zip
+        html_body: |
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <style>
+              body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+              .container { max-width: 650px; margin: 0 auto; padding: 20px; }
+              .header { background: linear-gradient(135deg, #24292e 0%, #2b3137 100%); color: white; padding: 20px; border-radius: 10px 10px 0 0; }
+              .content { background: #f8f9fa; padding: 20px; border-radius: 0 0 10px 10px; }
+              .status { font-size: 24px; font-weight: bold; margin: 15px 0; }
+              .status-success { color: #28a745; }
+              .status-failure { color: #dc3545; }
+              .info-row { display: flex; padding: 10px; border-bottom: 1px solid #dee2e6; }
+              .info-label { font-weight: bold; width: 150px; color: #495057; }
+              .info-value { flex: 1; color: #212529; }
+              .button { display: inline-block; background: #2ea44f; color: white !important; padding: 12px 24px; text-decoration: none; border-radius: 6px; margin: 10px 5px; font-weight: bold; }
+              .button-secondary { background: #0366d6; }
+              .release-box { background: #e7f3ff; border: 1px solid #0366d6; border-radius: 8px; padding: 15px; margin: 15px 0; }
+              .release-box h3 { margin-top: 0; color: #0366d6; }
+              .file-list { background: white; border-radius: 6px; padding: 10px; margin: 10px 0; }
+              .file-item { display: flex; align-items: center; padding: 8px; border-bottom: 1px solid #eee; }
+              .file-item:last-child { border-bottom: none; }
+              .file-icon { margin-right: 10px; font-size: 20px; }
+              .file-name { flex: 1; font-family: monospace; }
+              .file-size { color: #666; font-size: 12px; }
+              .footer { margin-top: 20px; font-size: 12px; color: #6c757d; text-align: center; border-top: 1px solid #dee2e6; padding-top: 15px; }
+              .attachment-note { background: #fff3cd; border-left: 4px solid #ffc107; padding: 10px; margin: 15px 0; border-radius: 4px; }
+            </style>
+          </head>
+          <body>
+            <div class="container">
+              <div class="header">
+                <h1>📦 股票数据发布报告</h1>
+                <p>版本: ${{ env.VERSION }} | 报告时间: ${{ env.BEIJING_TIME }}</p>
+              </div>
+              
+              <div class="content">
+                <div class="status ${{ steps.run_script.outcome == 'success' && 'status-success' || 'status-failure' }}">
+                  ${{ steps.run_script.outcome == 'success' && '✅ 数据采集成功' || '❌ 数据采集失败' }}
+                </div>
+                
+                <!-- ===== Release 信息 ===== -->
+                <div class="release-box">
+                  <h3>📦 GitHub Release 信息</h3>
+                  <div class="info-row">
+                    <span class="info-label">版本标签:</span>
+                    <span class="info-value"><code>${{ env.VERSION }}</code></span>
+                  </div>
+                  <div class="info-row">
+                    <span class="info-label">发布名称:</span>
+                    <span class="info-value">${{ env.RELEASE_NAME }}</span>
+                  </div>
+                  
+                  <div class="file-list">
+                    <div class="file-item">
+                      <span class="file-icon">📊</span>
+                      <span class="file-name">stock_data_${{ env.VERSION }}.zip</span>
+                      <span class="file-size">${{ env.DATA_SIZE || '无数据' }}</span>
+                    </div>
+                    <div class="file-item">
+                      <span class="file-icon">📋</span>
+                      <span class="file-name">workflow_logs_${{ env.VERSION }}.zip</span>
+                      <span class="file-size">${{ env.LOG_SIZE }}</span>
+                    </div>
+                  </div>
+                  
+                  <div style="text-align: center;">
+                    <a href="${{ env.RELEASE_URL }}" class="button" style="color: white !important;">
+                      🔗 访问 Release 页面
+                    </a>
+                  </div>
+                </div>
+                
+                <!-- ===== 执行信息 ===== -->
+                <div class="info-row">
+                  <span class="info-label">📋 工作流:</span>
+                  <span class="info-value">${{ github.workflow }} #${{ github.run_number }}</span>
+                </div>
+                
+                <div class="info-row">
+                  <span class="info-label">⏰ 执行时间:</span>
+                  <span class="info-value">${{ env.BEIJING_TIME }} (北京时间)</span>
+                </div>
+                
+                <div class="info-row">
+                  <span class="info-label">⏱️ 运行时长:</span>
+                  <span class="info-value">${{ env.DURATION }}</span>
+                </div>
+                
+                <div class="info-row">
+                  <span class="info-label">🌐 IP 地址:</span>
+                  <span class="info-value">${{ env.IP_ADDRESS }}</span>
+                </div>
+                
+                <div class="info-row">
+                  <span class="info-label">📦 数据状态:</span>
+                  <span class="info-value">${{ env.HAS_DATA == 'true' && '已打包' || '无数据' }}</span>
+                </div>
+                
+                <!-- ===== 链接按钮 ===== -->
+                <div style="text-align: center; margin-top: 20px;">
+                  <a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" class="button button-secondary" style="color: white !important;">
+                    🔍 查看工作流日志
+                  </a>
+                </div>
+                
+                <p style="margin-top: 15px; word-break: break-all; font-size: 12px;">
+                  📎 <strong>Release 直链:</strong><br>
+                  <a href="${{ env.RELEASE_URL }}" style="color: #0366d6;">${{ env.RELEASE_URL }}</a>
+                </p>
+                
+                <!-- ===== 附件说明 ===== -->
+                <div class="attachment-note">
+                  <strong>📎 邮件附件说明:</strong><br>
+                  本邮件包含工作流日志附件 (workflow_logs_${{ env.VERSION }}.zip, 大小: ${{ env.LOG_SIZE }})<br>
+                  完整数据文件请访问上方的 Release 页面下载。
+                </div>
+                
+                <div class="footer">
+                  <p>🤖 此邮件由 GitHub Actions 自动发送</p>
+                  <p>📁 仓库: ${{ github.repository }} | 运行 ID: ${{ github.run_id }}</p>
+                  <p>🕐 ${{ env.BEIJING_TIME }}</p>
+                </div>
+              </div>
+            </div>
+          </body>
+          </html>
+      continue-on-error: true
+
+    # ===== 提交代码变更（可选） =====
+    - name: Commit and push changes
+      if: success()
+      run: |
+        git config --global user.name 'github-actions[bot]'
+        git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+        git add .
+        git commit -m "Update stock data - ${{ env.VERSION }}" || echo "No changes to commit"
+        git push
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    # ===== 清理临时文件 =====
+    - name: Cleanup
+      if: always()
+      run: |
+        rm -f stock_data_${{ env.VERSION }}.zip
+        rm -f workflow_logs_${{ env.VERSION }}.zip
