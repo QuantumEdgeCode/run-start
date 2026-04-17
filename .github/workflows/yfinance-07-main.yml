@@ -1,0 +1,244 @@
+#2024/06/18 18:43:44 GMT+08:00
+name: Run yfinance Stock Data Collector
+
+on:
+  workflow_dispatch:  # 使用 workflow_dispatch 触发方式
+  schedule:
+    - cron: '0 1 * * 6'  # 每周六北京时间上午9点执行一次
+
+jobs:
+  collect_stock_data:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4  
+
+    - name: Set up Python
+      uses: actions/setup-python@v4.6.1
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        pip install yfinance pandas openpyxl curl_cffi
+        sudo apt-get install -y jq  # 确保 jq 已安装
+
+    - name: Remove old data directory
+      run: rm -rf ./data/  
+
+    - name: Get Start Time
+      id: get_start_time
+      run: |
+        START_TIME=$(date -u '+%s')
+        echo "START_TIME=$START_TIME" >> $GITHUB_ENV
+        # 同时获取北京时间
+        BEIJING_TIME=$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')
+        echo "BEIJING_TIME=$BEIJING_TIME" >> $GITHUB_ENV
+
+    - name: Create logs directory
+      run: mkdir -p ./logs
+
+    - name: Run yfinance Stock Data Collector
+      id: run_script
+      run: |
+        # 运行脚本并同时输出到控制台和日志文件
+        python 获取行情数据yuk2修正1.py 2>&1 | tee ./logs/script_execution.log
+        # 保存退出码
+        echo "EXIT_CODE=${PIPESTATUS[0]}" >> $GITHUB_ENV
+      working-directory: ./
+
+    - name: Collect GitHub Actions step logs
+      if: always()
+      run: |
+        echo "=== GitHub Actions Workflow Summary ===" > ./logs/workflow_summary.log
+        echo "Workflow Name: ${{ github.workflow }}" >> ./logs/workflow_summary.log
+        echo "Run ID: ${{ github.run_id }}" >> ./logs/workflow_summary.log
+        echo "Run Number: ${{ github.run_number }}" >> ./logs/workflow_summary.log
+        echo "Triggered by: ${{ github.event_name }}" >> ./logs/workflow_summary.log
+        echo "Repository: ${{ github.repository }}" >> ./logs/workflow_summary.log
+        echo "Branch: ${{ github.ref_name }}" >> ./logs/workflow_summary.log
+        echo "Commit SHA: ${{ github.sha }}" >> ./logs/workflow_summary.log
+        echo "Run URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" >> ./logs/workflow_summary.log
+        echo "" >> ./logs/workflow_summary.log
+        echo "=== Script Execution Status ===" >> ./logs/workflow_summary.log
+        echo "Script Outcome: ${{ steps.run_script.outcome }}" >> ./logs/workflow_summary.log
+        echo "Exit Code: ${{ env.EXIT_CODE }}" >> ./logs/workflow_summary.log
+
+    - name: Compress logs
+      if: always()
+      run: |
+        # 打包所有日志文件
+        cd ./logs
+        zip -r ../workflow_logs_${{ github.run_id }}.zip ./*
+        cd ..
+
+    - name: Get End Time and Duration
+      id: get_end_time
+      if: always()
+      run: |
+        END_TIME=$(date -u '+%s')
+        DURATION=$((END_TIME - START_TIME))
+        EXECUTION_TIME=$(date -u -d @$START_TIME '+%Y-%m-%d %H:%M:%S UTC')
+        REPORT_DATE=$(TZ='Asia/Shanghai' date '+%Y-%m-%d %T')
+        
+        # 格式化运行时长
+        HOURS=$((DURATION / 3600))
+        MINUTES=$(((DURATION % 3600) / 60))
+        SECONDS=$((DURATION % 60))
+        DURATION_FORMATTED=$(printf "%02d:%02d:%02d" $HOURS $MINUTES $SECONDS)
+        
+        echo "END_TIME=$END_TIME" >> $GITHUB_ENV
+        echo "DURATION=$DURATION_FORMATTED" >> $GITHUB_ENV
+        echo "EXECUTION_TIME=$EXECUTION_TIME" >> $GITHUB_ENV
+        echo "REPORT_DATE=$REPORT_DATE" >> $GITHUB_ENV
+
+    - name: Get IP Address
+      id: get_ip
+      continue-on-error: true
+      run: |
+        set +x
+        IP_ADDRESS=$(curl -s https://api64.ipify.org?format=json | jq -r '.ip // "无法获取"')
+        echo "IP_ADDRESS=$IP_ADDRESS" >> $GITHUB_ENV
+        set -x
+
+    - name: Get log file size
+      if: always()
+      id: log_size
+      run: |
+        LOG_SIZE=$(du -h workflow_logs_${{ github.run_id }}.zip | cut -f1)
+        echo "LOG_SIZE=$LOG_SIZE" >> $GITHUB_ENV
+
+    - name: Upload logs as artifact
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: workflow-logs-${{ github.run_id }}
+        path: workflow_logs_${{ github.run_id }}.zip
+        retention-days: 7
+
+    - name: Send email notification
+      if: always()
+      uses: dawidd6/action-send-mail@v3
+      with:
+        server_address: ${{ secrets.MAIL_ADDRESS }}
+        server_port: ${{ secrets.MAIL_PORT }}
+        username: ${{ secrets.MAIL_USERNAME }}
+        password: ${{ secrets.MAIL_PASSWORD }}
+        subject: 通知UT (${{ env.REPORT_DATE }}) - ${{ steps.run_script.outcome == 'success' && '✅成功' || '❌失败' }}
+        to: ${{ secrets.MAIL_TO }}
+        from: 数据通知/UT
+        # ===== 附件：工作流日志 =====
+        attachments: workflow_logs_${{ github.run_id }}.zip
+        html_body: |
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <style>
+              body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+              .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+              .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 10px 10px 0 0; }
+              .content { background: #f8f9fa; padding: 20px; border-radius: 0 0 10px 10px; }
+              .status { font-size: 24px; font-weight: bold; margin: 15px 0; }
+              .status-success { color: #28a745; }
+              .status-failure { color: #dc3545; }
+              .info-row { display: flex; padding: 10px; border-bottom: 1px solid #dee2e6; }
+              .info-label { font-weight: bold; width: 140px; color: #495057; }
+              .info-value { flex: 1; color: #212529; }
+              .button { display: inline-block; background: #667eea; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; margin-top: 20px; }
+              .button:hover { background: #5a67d8; }
+              .footer { margin-top: 20px; font-size: 12px; color: #6c757d; text-align: center; }
+              .attachment-note { background: #e7f3ff; border-left: 4px solid #2196F3; padding: 10px; margin: 15px 0; border-radius: 4px; }
+            </style>
+          </head>
+          <body>
+            <div class="container">
+              <div class="header">
+                <h1>📊 股票数据采集报告</h1>
+                <p>报告时间: ${{ env.REPORT_DATE }} (北京时间)</p>
+              </div>
+              
+              <div class="content">
+                <div class="status ${{ steps.run_script.outcome == 'success' && 'status-success' || 'status-failure' }}">
+                  ${{ steps.run_script.outcome == 'success' && '✅ 执行成功' || '❌ 执行失败' }}
+                </div>
+                
+                <div class="info-row">
+                  <span class="info-label">📋 工作流名称:</span>
+                  <span class="info-value">${{ github.workflow }}</span>
+                </div>
+                
+                <div class="info-row">
+                  <span class="info-label">🔄 运行编号:</span>
+                  <span class="info-value">#${{ github.run_number }}</span>
+                </div>
+                
+                <div class="info-row">
+                  <span class="info-label">⏰ 执行时间:</span>
+                  <span class="info-value">${{ env.EXECUTION_TIME }}</span>
+                </div>
+                
+                <div class="info-row">
+                  <span class="info-label">⏱️ 运行时长:</span>
+                  <span class="info-value">${{ env.DURATION }}</span>
+                </div>
+                
+                <div class="info-row">
+                  <span class="info-label">🌐 IP 地址:</span>
+                  <span class="info-value">${{ env.IP_ADDRESS }}</span>
+                </div>
+                
+                <div class="info-row">
+                  <span class="info-label">📦 分支:</span>
+                  <span class="info-value">${{ github.ref_name }}</span>
+                </div>
+                
+                <div class="info-row">
+                  <span class="info-label">🔗 提交 SHA:</span>
+                  <span class="info-value">${{ github.sha }}</span>
+                </div>
+                
+                <!-- ===== 日志 URL 链接 ===== -->
+                <div style="margin-top: 20px; text-align: center;">
+                  <a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" class="button" style="color: white;">
+                    🔍 查看完整工作流日志
+                  </a>
+                </div>
+                
+                <p style="margin-top: 15px; word-break: break-all;">
+                  📎 <strong>日志直链:</strong><br>
+                  <a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" style="color: #667eea;">
+                    ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+                  </a>
+                </p>
+                
+                <!-- ===== 附件说明 ===== -->
+                <div class="attachment-note">
+                  <strong>📎 附件说明:</strong><br>
+                  本邮件包含工作流日志附件 (workflow_logs_${{ github.run_id }}.zip, 大小: ${{ env.LOG_SIZE }})<br>
+                  附件包含: script_execution.log (脚本输出) 和 workflow_summary.log (工作流摘要)
+                </div>
+                
+                <hr style="border: none; border-top: 1px solid #dee2e6; margin: 20px 0;">
+                
+                <div class="footer">
+                  <p>此邮件由 GitHub Actions 自动发送</p>
+                  <p>仓库: ${{ github.repository }} | 运行 ID: ${{ github.run_id }}</p>
+                  <p>${{ env.BEIJING_TIME }}</p>
+                </div>
+              </div>
+            </div>
+          </body>
+          </html>
+      continue-on-error: true
+
+    - name: Commit and push changes
+      if: success()
+      run: |
+        git config --global user.name 'github-actions[bot]'
+        git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+        git add .
+        git commit -m "Update stock data - $(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')" || echo "No changes to commit"
+        git push
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
