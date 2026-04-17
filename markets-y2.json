@@ -4,7 +4,7 @@
         "market": "tw",
         "file_name": "two_yahoo.txt",
         "interval": "1m",
-        "period": "5d",
+        "period": "7d",
         "save_format": "csv"
     },
     {
@@ -12,7 +12,7 @@
         "market": "krx",
         "file_name": "krx-yahoo.txt",
         "interval": "1m",
-        "period": "max",
+        "period": "7d",
         "save_format": "csv"
     },
     {
@@ -20,7 +20,7 @@
         "market": "jp",
         "file_name": "jp-yahoo.txt",
         "interval": "1m",
-        "period": "5d",
+        "period": "7d",
         "save_format": "csv"
     },
     {
@@ -28,7 +28,7 @@
         "market": "us",
         "file_name": "us-yahoo.txt",
         "interval": "1m",
-        "period": "5d",
+        "period": "7d",
         "save_format": "csv"
     },
     {
@@ -36,7 +36,7 @@
         "market": "sgx",
         "file_name": "sgx-yahoo.txt",
         "interval": "1m",
-        "period": "max",
+        "period": "7d",
         "save_format": "csv"
     }
 ]
