@@ -12,10 +12,11 @@ def get_current_date():
     return datetime.now().strftime('%Y-%m-%d')
 
 def get_stock_data(ticker, period, interval):
-    """获取股票数据，失败时重试"""
-    for attempt in range(3):  # 增加到3次重试
+    """获取股票数据，失败时重试1次"""
+    max_attempts = 2  # 总共2次尝试（首次 + 1次重试）
+    
+    for attempt in range(max_attempts):
         try:
-            # ===== 关键修复：删除 session 参数，让 yfinance 自动处理 TLS 指纹 =====
             stock = yf.Ticker(ticker)
             stock_df = stock.history(period=period, interval=interval)
             
@@ -24,12 +25,12 @@ def get_stock_data(ticker, period, interval):
             return stock_df
             
         except Exception as e:
-            error_message = f"尝试获取 {ticker} 数据失败，尝试次数：{attempt + 1}/3。错误信息：{str(e)}"
+            error_message = f"尝试获取 {ticker} 数据失败，尝试次数：{attempt + 1}/{max_attempts}。错误信息：{str(e)}"
             logging.error(error_message)
             print(error_message)
             
-            if attempt < 2:  # 最后一次不等待
-                time.sleep(3)  # 等待3秒后重试
+            if attempt < max_attempts - 1:  # 如果不是最后一次尝试
+                time.sleep(2)  # 等待2秒后重试
     return None
 
 def setup_logging(log_dir, market):
