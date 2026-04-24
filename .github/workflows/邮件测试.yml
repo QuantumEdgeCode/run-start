@@ -1,0 +1,135 @@
+# 邮件测试工作流
+name: Test Email Notification
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test_email:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Create logs directory
+      run: mkdir -p ./logs
+
+    - name: Generate test info
+      run: |
+        echo "REPORT_DATE=$(TZ='Asia/Shanghai' date '+%Y-%m-%d %T')" >> $GITHUB_ENV
+        echo "BEIJING_TIME=$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')" >> $GITHUB_ENV
+        echo "VERSION=test-$(TZ='Asia/Shanghai' date '+%Y%m%d-%H%M%S')" >> $GITHUB_ENV
+        echo "VERSION=test-$(TZ='Asia/Shanghai' date '+%Y%m%d-%H%M%S')" >> $GITHUB_ENV
+        echo "RELEASE_NAME=Test Release" >> $GITHUB_ENV
+        echo "FILE_COUNT=0" >> $GITHUB_ENV
+        echo "DURATION=00:00:05" >> $GITHUB_ENV
+        echo "IP_ADDRESS=测试环境" >> $GITHUB_ENV
+        echo "LOG_SIZE=1.2KB" >> $GITHUB_ENV
+        echo "DATA_SIZE=无数据" >> $GITHUB_ENV
+        echo "HAS_DATA=false" >> $GITHUB_ENV
+        echo "RELEASE_URL=https://github.com/test" >> $GITHUB_ENV
+        
+        # 创建测试日志文件
+        echo "这是测试日志文件" > ./logs/test.log
+        zip -r workflow_logs_test.zip ./logs/
+
+    - name: Send email notification
+      if: always()
+      uses: dawidd6/action-send-mail@v3
+      with:
+        server_address: ${{ secrets.MAIL_ADDRESS }}
+        server_port: ${{ secrets.MAIL_PORT }}
+        username: ${{ secrets.MAIL_USERNAME }}
+        password: ${{ secrets.MAIL_PASSWORD }}
+        subject: 邮件测试 (${{ env.REPORT_DATE }}) - 🧪测试邮件
+        to: ${{ secrets.MAIL_TO }}
+        from: 数据通知/UT
+        attachments: workflow_logs_test.zip
+        html_body: |
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <style>
+              body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+              .container { max-width: 650px; margin: 0 auto; padding: 20px; }
+              .header { background: linear-gradient(135deg, #6f42c1 0%, #6610f2 100%); color: white; padding: 20px; border-radius: 10px 10px 0 0; }
+              .content { background: #f8f9fa; padding: 20px; border-radius: 0 0 10px 10px; }
+              .status { font-size: 24px; font-weight: bold; margin: 15px 0; color: #6f42c1; }
+              .info-row { display: flex; padding: 10px; border-bottom: 1px solid #dee2e6; }
+              .info-label { font-weight: bold; width: 150px; color: #495057; }
+              .info-value { flex: 1; color: #212529; }
+              .button { display: inline-block; background: #6f42c1; color: white !important; padding: 12px 24px; text-decoration: none; border-radius: 6px; margin: 10px 5px; font-weight: bold; }
+              .footer { margin-top: 20px; font-size: 12px; color: #6c757d; text-align: center; border-top: 1px solid #dee2e6; padding-top: 15px; }
+              .test-box { background: #f0e6ff; border: 1px solid #6f42c1; border-radius: 8px; padding: 15px; margin: 15px 0; }
+            </style>
+          </head>
+          <body>
+            <div class="container">
+              <div class="header">
+                <h1>🧪 邮件发送测试</h1>
+                <p>测试版本: ${{ env.VERSION }} | 测试时间: ${{ env.BEIJING_TIME }}</p>
+              </div>
+              
+              <div class="content">
+                <div class="status">
+                  🧪 邮件功能测试
+                </div>
+                
+                <div class="test-box">
+                  <h3>📧 测试信息</h3>
+                  <div class="info-row">
+                    <span class="info-label">测试目的:</span>
+                    <span class="info-value">验证GitHub Actions邮件通知功能</span>
+                  </div>
+                  <div class="info-row">
+                    <span class="info-label">邮件服务:</span>
+                    <span class="info-value">dawidd6/action-send-mail@v3</span>
+                  </div>
+                  <div class="info-row">
+                    <span class="info-label">发送时间:</span>
+                    <span class="info-value">${{ env.BEIJING_TIME }}</span>
+                  </div>
+                  <div class="info-row">
+                    <span class="info-label">附件测试:</span>
+                    <span class="info-value">workflow_logs_test.zip (${{ env.LOG_SIZE }})</span>
+                  </div>
+                </div>
+                
+                <div class="info-row">
+                  <span class="info-label">📋 工作流:</span>
+                  <span class="info-value">${{ github.workflow }} #${{ github.run_number }}</span>
+                </div>
+                
+                <div class="info-row">
+                  <span class="info-label">⏰ 执行时间:</span>
+                  <span class="info-value">${{ env.BEIJING_TIME }} (北京时间)</span>
+                </div>
+                
+                <div class="info-row">
+                  <span class="info-label">⏱️ 运行时长:</span>
+                  <span class="info-value">${{ env.DURATION }}</span>
+                </div>
+                
+                <div style="text-align: center; margin-top: 20px;">
+                  <a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" class="button" style="color: white !important;">
+                    🔍 查看工作流运行
+                  </a>
+                </div>
+                
+                <div class="footer">
+                  <p>🧪 此邮件为功能测试 - 由 GitHub Actions 自动发送</p>
+                  <p>📁 仓库: ${{ github.repository }} | 运行 ID: ${{ github.run_id }}</p>
+                  <p>🕐 ${{ env.BEIJING_TIME }}</p>
+                  <p>✅ 如果您收到此邮件，说明邮件通知功能正常</p>
+                </div>
+              </div>
+            </div>
+          </body>
+          </html>
+      continue-on-error: true
+
+    - name: Cleanup
+      if: always()
+      run: |
+        rm -f workflow_logs_test.zip
