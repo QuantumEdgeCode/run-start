@@ -1,4 +1,4 @@
-# 邮件测试工作流
+# 邮件测试工作流 - 更新版（Node.js 24兼容）
 name: Test Email Notification
 
 on:
@@ -11,6 +11,8 @@ jobs:
     steps:
     - name: Checkout Repository
       uses: actions/checkout@v4
+      with:
+        persist-credentials: false
 
     - name: Create logs directory
       run: mkdir -p ./logs
@@ -20,116 +22,195 @@ jobs:
         echo "REPORT_DATE=$(TZ='Asia/Shanghai' date '+%Y-%m-%d %T')" >> $GITHUB_ENV
         echo "BEIJING_TIME=$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')" >> $GITHUB_ENV
         echo "VERSION=test-$(TZ='Asia/Shanghai' date '+%Y%m%d-%H%M%S')" >> $GITHUB_ENV
-        echo "VERSION=test-$(TZ='Asia/Shanghai' date '+%Y%m%d-%H%M%S')" >> $GITHUB_ENV
         echo "RELEASE_NAME=Test Release" >> $GITHUB_ENV
-        echo "FILE_COUNT=0" >> $GITHUB_ENV
-        echo "DURATION=00:00:05" >> $GITHUB_ENV
-        echo "IP_ADDRESS=测试环境" >> $GITHUB_ENV
         echo "LOG_SIZE=1.2KB" >> $GITHUB_ENV
-        echo "DATA_SIZE=无数据" >> $GITHUB_ENV
-        echo "HAS_DATA=false" >> $GITHUB_ENV
-        echo "RELEASE_URL=https://github.com/test" >> $GITHUB_ENV
         
         # 创建测试日志文件
-        echo "这是测试日志文件" > ./logs/test.log
-        zip -r workflow_logs_test.zip ./logs/
+        echo "这是邮件测试的日志文件" > ./logs/test.log
+        echo "测试时间: $(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')" >> ./logs/test.log
+        echo "GitHub Actions 运行编号: ${{ github.run_number }}" >> ./logs/test.log
+        
+        # 打包测试附件
+        zip -r workflow_logs_test_${{ env.VERSION }}.zip ./logs/
 
-    - name: Send email notification
+    # 方法1：使用curl直接发送邮件（通过SendGrid API示例）
+    - name: Send email via curl (SendGrid API)
       if: always()
-      uses: dawidd6/action-send-mail@v3
-      with:
-        server_address: ${{ secrets.MAIL_ADDRESS }}
-        server_port: ${{ secrets.MAIL_PORT }}
-        username: ${{ secrets.MAIL_USERNAME }}
-        password: ${{ secrets.MAIL_PASSWORD }}
-        subject: 邮件测试 (${{ env.REPORT_DATE }}) - 🧪测试邮件
-        to: ${{ secrets.MAIL_TO }}
-        from: 数据通知/UT
-        attachments: workflow_logs_test.zip
-        html_body: |
-          <!DOCTYPE html>
-          <html>
-          <head>
+      env:
+        SENDGRID_API_KEY: ${{ secrets.SENDGRID_API_KEY }}
+        MAIL_TO: ${{ secrets.MAIL_TO }}
+      run: |
+        cat > email_payload.json << 'EOF'
+        {
+          "personalizations": [{
+            "to": [{"email": "'${MAIL_TO}'"}],
+            "subject": "邮件测试 ('${REPORT_DATE}') - 🧪测试邮件 curl方式"
+          }],
+          "from": {
+            "email": "'${MAIL_USERNAME}'",
+            "name": "数据通知/UT"
+          },
+          "content": [{
+            "type": "text/html",
+            "value": "<h2>🧪 邮件发送测试 - curl方式</h2><p>测试时间: '${BEIJING_TIME}'</p><p>如果您收到此邮件，说明curl邮件发送功能正常。</p><p>工作流: ${{ github.workflow }} #${{ github.run_number }}</p>"
+          }],
+          "attachments": [{
+            "content": "$(base64 -w 0 workflow_logs_test_${{ env.VERSION }}.zip)",
+            "filename": "workflow_logs_test_${{ env.VERSION }}.zip",
+            "type": "application/zip",
+            "disposition": "attachment"
+          }]
+        }
+        EOF
+        
+        curl -X POST "https://api.sendgrid.com/v3/mail/send" \
+          -H "Authorization: Bearer $SENDGRID_API_KEY" \
+          -H "Content-Type: application/json" \
+          -d @email_payload.json
+
+    # 方法2：使用Python发送邮件（更灵活，支持HTML模板）
+    - name: Send email via Python
+      if: always()
+      env:
+        MAIL_ADDRESS: ${{ secrets.MAIL_ADDRESS }}
+        MAIL_PORT: ${{ secrets.MAIL_PORT }}
+        MAIL_USERNAME: ${{ secrets.MAIL_USERNAME }}
+        MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
+        MAIL_TO: ${{ secrets.MAIL_TO }}
+      run: |
+        python3 << 'PYTHON_SCRIPT'
+        import smtplib
+        import os
+        from email.mime.text import MIMEText
+        from email.mime.multipart import MIMEMultipart
+        from email.mime.base import MIMEBase
+        from email import encoders
+        from datetime import datetime
+        
+        # 获取环境变量
+        beijing_time = os.environ.get('BEIJING_TIME', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+        version = os.environ.get('VERSION', 'test')
+        workflow = os.environ.get('GITHUB_WORKFLOW', 'Test Email')
+        run_number = os.environ.get('GITHUB_RUN_NUMBER', '0')
+        run_id = os.environ.get('GITHUB_RUN_ID', '0')
+        repository = os.environ.get('GITHUB_REPOSITORY', 'test/repo')
+        server_url = os.environ.get('GITHUB_SERVER_URL', 'https://github.com')
+        
+        # HTML邮件模板
+        html_body = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
             <style>
-              body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
-              .container { max-width: 650px; margin: 0 auto; padding: 20px; }
-              .header { background: linear-gradient(135deg, #6f42c1 0%, #6610f2 100%); color: white; padding: 20px; border-radius: 10px 10px 0 0; }
-              .content { background: #f8f9fa; padding: 20px; border-radius: 0 0 10px 10px; }
-              .status { font-size: 24px; font-weight: bold; margin: 15px 0; color: #6f42c1; }
-              .info-row { display: flex; padding: 10px; border-bottom: 1px solid #dee2e6; }
-              .info-label { font-weight: bold; width: 150px; color: #495057; }
-              .info-value { flex: 1; color: #212529; }
-              .button { display: inline-block; background: #6f42c1; color: white !important; padding: 12px 24px; text-decoration: none; border-radius: 6px; margin: 10px 5px; font-weight: bold; }
-              .footer { margin-top: 20px; font-size: 12px; color: #6c757d; text-align: center; border-top: 1px solid #dee2e6; padding-top: 15px; }
-              .test-box { background: #f0e6ff; border: 1px solid #6f42c1; border-radius: 8px; padding: 15px; margin: 15px 0; }
+              body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }}
+              .container {{ max-width: 650px; margin: 0 auto; padding: 20px; }}
+              .header {{ background: linear-gradient(135deg, #6f42c1 0%, #6610f2 100%); color: white; padding: 20px; border-radius: 10px 10px 0 0; }}
+              .content {{ background: #f8f9fa; padding: 20px; border-radius: 0 0 10px 10px; }}
+              .status {{ font-size: 24px; font-weight: bold; margin: 15px 0; color: #6f42c1; }}
+              .info-row {{ display: flex; padding: 10px; border-bottom: 1px solid #dee2e6; }}
+              .info-label {{ font-weight: bold; width: 150px; color: #495057; }}
+              .info-value {{ flex: 1; color: #212529; }}
+              .button {{ display: inline-block; background: #6f42c1; color: white !important; padding: 12px 24px; text-decoration: none; border-radius: 6px; margin: 10px 5px; font-weight: bold; }}
+              .footer {{ margin-top: 20px; font-size: 12px; color: #6c757d; text-align: center; border-top: 1px solid #dee2e6; padding-top: 15px; }}
+              .test-box {{ background: #f0e6ff; border: 1px solid #6f42c1; border-radius: 8px; padding: 15px; margin: 15px 0; }}
             </style>
-          </head>
-          <body>
+        </head>
+        <body>
             <div class="container">
               <div class="header">
-                <h1>🧪 邮件发送测试</h1>
-                <p>测试版本: ${{ env.VERSION }} | 测试时间: ${{ env.BEIJING_TIME }}</p>
+                <h1>🧪 邮件发送测试 - Python方式</h1>
+                <p>测试版本: {version} | 测试时间: {beijing_time}</p>
               </div>
               
               <div class="content">
                 <div class="status">
-                  🧪 邮件功能测试
+                  🧪 邮件功能测试（SMTP方式）
                 </div>
                 
                 <div class="test-box">
                   <h3>📧 测试信息</h3>
                   <div class="info-row">
-                    <span class="info-label">测试目的:</span>
-                    <span class="info-value">验证GitHub Actions邮件通知功能</span>
+                    <span class="info-label">发送方式:</span>
+                    <span class="info-value">Python smtplib (SMTP)</span>
                   </div>
                   <div class="info-row">
-                    <span class="info-label">邮件服务:</span>
-                    <span class="info-value">dawidd6/action-send-mail@v3</span>
+                    <span class="info-label">服务器:</span>
+                    <span class="info-value">{os.environ.get('MAIL_ADDRESS', '未配置')}:{os.environ.get('MAIL_PORT', '未配置')}</span>
                   </div>
                   <div class="info-row">
                     <span class="info-label">发送时间:</span>
-                    <span class="info-value">${{ env.BEIJING_TIME }}</span>
-                  </div>
-                  <div class="info-row">
-                    <span class="info-label">附件测试:</span>
-                    <span class="info-value">workflow_logs_test.zip (${{ env.LOG_SIZE }})</span>
+                    <span class="info-value">{beijing_time}</span>
                   </div>
                 </div>
                 
                 <div class="info-row">
                   <span class="info-label">📋 工作流:</span>
-                  <span class="info-value">${{ github.workflow }} #${{ github.run_number }}</span>
-                </div>
-                
-                <div class="info-row">
-                  <span class="info-label">⏰ 执行时间:</span>
-                  <span class="info-value">${{ env.BEIJING_TIME }} (北京时间)</span>
-                </div>
-                
-                <div class="info-row">
-                  <span class="info-label">⏱️ 运行时长:</span>
-                  <span class="info-value">${{ env.DURATION }}</span>
+                  <span class="info-value">{workflow} #{run_number}</span>
                 </div>
                 
                 <div style="text-align: center; margin-top: 20px;">
-                  <a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" class="button" style="color: white !important;">
+                  <a href="{server_url}/{repository}/actions/runs/{run_id}" class="button" style="color: white !important;">
                     🔍 查看工作流运行
                   </a>
                 </div>
                 
                 <div class="footer">
-                  <p>🧪 此邮件为功能测试 - 由 GitHub Actions 自动发送</p>
-                  <p>📁 仓库: ${{ github.repository }} | 运行 ID: ${{ github.run_id }}</p>
-                  <p>🕐 ${{ env.BEIJING_TIME }}</p>
-                  <p>✅ 如果您收到此邮件，说明邮件通知功能正常</p>
+                  <p>🧪 此邮件为功能测试 - 使用Python SMTP发送</p>
+                  <p>📁 仓库: {repository} | 运行 ID: {run_id}</p>
+                  <p>🕐 {beijing_time}</p>
+                  <p>✅ Node.js 24兼容版本 - 使用Python发送邮件</p>
                 </div>
               </div>
             </div>
-          </body>
-          </html>
-      continue-on-error: true
+        </body>
+        </html>
+        """
+        
+        try:
+            # 创建邮件
+            msg = MIMEMultipart()
+            msg['From'] = "数据通知/UT <{}>".format(os.environ['MAIL_USERNAME'])
+            msg['To'] = os.environ['MAIL_TO']
+            msg['Subject'] = f"邮件测试 ({beijing_time}) - 🧪测试邮件 Python SMTP"
+            
+            # 添加HTML正文
+            msg.attach(MIMEText(html_body, 'html', 'utf-8'))
+            
+            # 添加附件
+            attachment_path = f"workflow_logs_test_{version}.zip"
+            if os.path.exists(attachment_path):
+                with open(attachment_path, 'rb') as attachment:
+                    part = MIMEBase('application', 'zip')
+                    part.set_payload(attachment.read())
+                    encoders.encode_base64(part)
+                    part.add_header(
+                        'Content-Disposition',
+                        f'attachment; filename=workflow_logs_test_{version}.zip'
+                    )
+                    msg.attach(part)
+            
+            # 发送邮件
+            server_address = os.environ['MAIL_ADDRESS']
+            server_port = int(os.environ['MAIL_PORT'])
+            
+            if server_port == 465:  # SSL
+                with smtplib.SMTP_SSL(server_address, server_port) as server:
+                    server.login(os.environ['MAIL_USERNAME'], os.environ['MAIL_PASSWORD'])
+                    server.send_message(msg)
+            else:  # TLS
+                with smtplib.SMTP(server_address, server_port) as server:
+                    server.starttls()
+                    server.login(os.environ['MAIL_USERNAME'], os.environ['MAIL_PASSWORD'])
+                    server.send_message(msg)
+                    
+            print("✅ 邮件发送成功！")
+            
+        except Exception as e:
+            print(f"❌ 邮件发送失败: {str(e)}")
+            # 不抛出异常，继续执行后续步骤
+        PYTHON_SCRIPT
 
     - name: Cleanup
       if: always()
       run: |
-        rm -f workflow_logs_test.zip
+        rm -f workflow_logs_test_*.zip email_payload.json
