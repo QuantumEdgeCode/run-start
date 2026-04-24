@@ -1,0 +1,72 @@
+# 独立保活工作流 - 防止60天无活动导致Actions被禁用
+name: 🤖 Repository Keepalive
+
+on:
+  schedule:
+    # 每30天执行一次保活（确保在60天期限内）
+    - cron: '0 2 1,15 * *'  # 每月1号和15号北京时间上午10点执行
+  workflow_dispatch:  # 支持手动触发
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+      with:
+        persist-credentials: true
+        fetch-depth: 1
+
+    - name: Generate keepalive commit
+      run: |
+        # 生成保活时间戳
+        BEIJING_TIME=$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')
+        UTC_TIME=$(date -u '+%Y-%m-%d %H:%M:%S')
+        DAYS_ACTIVE=$(( ($(date +%s) - $(git log -1 --format=%at)) / 86400 ))
+        
+        # 创建保活日志目录
+        mkdir -p .github/keepalive
+        
+        # 生成保活日志
+        cat > .github/keepalive/status.md << EOF
+        # 🤖 仓库保活状态
+        
+        | 项目 | 信息 |
+        |:---|:---|
+        | **最后保活时间** | ${BEIJING_TIME} (北京时间) |
+        | **UTC时间** | ${UTC_TIME} |
+        | **保活工作流编号** | #${{ github.run_number }} |
+        | **最近活跃天数** | ${DAYS_ACTIVE} 天前 |
+        | **仓库状态** | ✅ 活跃 |
+        
+        ---
+        *此文件由 GitHub Actions 自动生成，用于防止仓库因60天无活动而停用 Actions*
+        EOF
+        
+        # 配置Git
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        
+        # 提交保活文件
+        git add .github/keepalive/status.md
+        
+        # 检查是否有变更
+        if git diff --cached --quiet; then
+          echo "🟢 无变更，跳过提交"
+        else
+          git commit -m "🤖 自动保活 - ${BEIJING_TIME} [skip ci]"
+          git push origin HEAD:${{ github.ref_name }}
+          echo "✅ 保活提交成功"
+        fi
+
+    - name: Show keepalive status
+      run: |
+        echo "========================================="
+        echo "🤖 保活工作流执行完成"
+        echo "========================================="
+        echo "仓库保持活跃状态，Actions不会被禁用"
+        echo "下次保活时间：30天后"
+        echo "========================================="
