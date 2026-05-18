@@ -37,30 +37,12 @@ permissions:
   actions: read
 
 # ============================================================
-# 作业定义（共4个作业）
-# 作业0 record-start-time → 记录工作流开始时间戳
-# 作业1 split-tasks       → 统计总任务数，输出20个Worker编号
-# 作业2 download-worker    → 20路并行下载股票数据（矩阵策略）
-# 作业3 merge-and-release  → 合并数据、打包、发布Release、发送邮件
+# 作业定义（共3个作业）
+# 作业1 split-tasks      → 统计总任务数，输出20个Worker编号
+# 作业2 download-worker   → 20路并行下载股票数据（矩阵策略）
+# 作业3 merge-and-release → 合并数据、打包、发布Release、发送邮件
 # ============================================================
 jobs:
-  # ============================================================
-  # 作业0：记录工作流开始时间
-  # 功能：在第一个job中记录UTC时间戳
-  #       后续作业通过 needs 引用此时间戳计算总运行时长
-  # 原因：每个job的 START_TIME 只能记录本job的运行时间
-  #       需要在整个工作流开始时就记录时间
-  # ============================================================
-  record-start-time:
-    runs-on: ubuntu-latest
-    outputs:
-      workflow_start_time: ${{ steps.record.outputs.workflow_start_time }}
-    steps:
-      - name: 记录工作流开始时间戳
-        id: record
-        run: |
-          echo "workflow_start_time=$(date -u +%s)" >> $GITHUB_OUTPUT
-
   # ============================================================
   # 作业1：拆分任务
   # 功能：读取markets-y2.json和各市场股票代码文件，统计总任务数
@@ -68,8 +50,6 @@ jobs:
   # 关键：只传编号不传任务数据，输出远小于1MB限制
   # ============================================================
   split-tasks:
-    # 依赖：等待record-start-time完成
-    needs: record-start-time
     runs-on: ubuntu-latest
     outputs:
       worker_ids: ${{ steps.split.outputs.worker_ids }}
@@ -109,6 +89,12 @@ jobs:
 
   # ============================================================
   # 作业2：20路并行下载股票数据
+  # 功能：使用矩阵策略同时运行20个Worker
+  #       每个Worker运行在独立虚拟机上，获得独立公网IP
+  #       每个Worker自行读取全量任务列表，按 index % 20 == worker_id-1 取模分配
+  #       调用仓库根目录「获取行情数据yuk2修正1.py」的 get_stock_data 和 write_data 函数
+  #       单个Worker失败不影响其他Worker（fail-fast: false）
+  #       每个Worker完成后将数据和日志打包为artifact上传
   # ============================================================
   download-worker:
     needs: split-tasks
@@ -229,10 +215,19 @@ jobs:
 
   # ============================================================
   # 作业3：合并数据并发布Release
+  # 功能：等待所有20个Worker完成后执行（即使部分失败也执行）
+  #       下载所有Worker的artifact到 ./merged 集中缓存目录
+  #       收集所有Worker的统计信息和20个节点的IP地址
+  #       合并股票数据到统一的 ./data 目录
+  #       使用 github.workflow_start_time 计算工作流真实总运行时长
+  #       打包数据和日志为ZIP文件
+  #       创建GitHub Release并上传数据包
+  #       发送HTML邮件通知（含20个节点IP、统计信息、Release链接）
+  #       邮件发送失败不影响整体流程
+  #       最后清理临时文件
   # ============================================================
   merge-and-release:
-    # 依赖：等待record-start-time和download-worker都完成
-    needs: [record-start-time, download-worker]
+    needs: download-worker
     runs-on: ubuntu-latest
     if: always()
     
@@ -250,7 +245,7 @@ jobs:
           echo "REPORT_DATE=$(TZ='Asia/Shanghai' date '+%Y-%m-%d %T')" >> $GITHUB_ENV
           echo "BEIJING_TIME=$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')" >> $GITHUB_ENV
       
-      - name: Create directories
+      - name: 创建本地工作目录
         run: mkdir -p ./data ./logs
       
       - name: 下载所有节点数据到集中缓存目录
@@ -262,27 +257,30 @@ jobs:
       
       - name: 收集所有节点统计信息和IP地址
         run: |
-          # 读取20个Worker的IP列表
-          WORKER_IP_LIST=""
+          # 按Worker编号排序IP列表，写入 node_ips.txt
           if [ -f "./merged/logs/worker_ips.txt" ]; then
-            WORKER_IP_LIST=$(cat ./merged/logs/worker_ips.txt)
+            sort -t' ' -k2 -n ./merged/logs/worker_ips.txt > ./logs/node_ips.txt
+          else
+            echo "无IP数据" > ./logs/node_ips.txt
           fi
+          
+          # 读取排序后的IP列表，存入环境变量供邮件使用
+          # 使用 base64 编码避免多行文本在环境变量中被截断
+          WORKER_IP_LIST=$(cat ./logs/node_ips.txt)
           echo "WORKER_IP_LIST<<EOF" >> $GITHUB_ENV
           echo "$WORKER_IP_LIST" >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
           
-          # 生成统计汇总
+          # 生成统计汇总文件
           echo "# 20路并行Worker统计汇总" > ./logs/workers_summary.txt
           echo "# 生成时间: $(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S') 北京时间" >> ./logs/workers_summary.txt
           echo "" >> ./logs/workers_summary.txt
           
-          if [ -f "./merged/logs/worker_ips.txt" ]; then
-            echo "## 节点IP地址列表" >> ./logs/workers_summary.txt
-            echo '```' >> ./logs/workers_summary.txt
-            cat ./merged/logs/worker_ips.txt >> ./logs/workers_summary.txt
-            echo '```' >> ./logs/workers_summary.txt
-            echo "" >> ./logs/workers_summary.txt
-          fi
+          echo "## 节点IP地址列表" >> ./logs/workers_summary.txt
+          echo '```' >> ./logs/workers_summary.txt
+          cat ./logs/node_ips.txt >> ./logs/workers_summary.txt
+          echo '```' >> ./logs/workers_summary.txt
+          echo "" >> ./logs/workers_summary.txt
           
           echo "## Worker执行统计" >> ./logs/workers_summary.txt
           echo "" >> ./logs/workers_summary.txt
@@ -314,6 +312,18 @@ jobs:
           echo "TOTAL_FAIL=$TOTAL_FAIL" >> $GITHUB_ENV
           echo "TOTAL=$TOTAL" >> $GITHUB_ENV
           echo "WORKER_COUNT=$WORKER_COUNT" >> $GITHUB_ENV
+          
+          echo "============================================="
+          echo "  20路并行统计汇总"
+          echo "============================================="
+          echo "  活跃Worker: $WORKER_COUNT / 20"
+          echo "  成功: $TOTAL_SUCCESS 只"
+          echo "  失败: $TOTAL_FAIL 只"
+          echo "  总计: $TOTAL 只"
+          echo "============================================="
+          echo ""
+          echo "节点IP列表:"
+          cat ./logs/node_ips.txt
       
       - name: 合并股票数据文件
         run: |
@@ -328,13 +338,15 @@ jobs:
             echo "HAS_DATA=false" >> $GITHUB_ENV
           fi
       
-      # 使用工作流开始时记录的时间戳计算总运行时长
+      # 使用 GitHub 提供的 github.workflow_start_time 计算真实总运行时长
+      # 这是整个工作流开始的时间，不是单个job的时间
       - name: 计算工作流总运行时长
         if: always()
         run: |
-          WORKFLOW_START=${{ needs.record-start-time.outputs.workflow_start_time }}
-          END_TIME=$(date -u '+%s')
-          DURATION=$((END_TIME - WORKFLOW_START))
+          # github.workflow_start_time 格式：2026-05-18T13:00:00.000Z
+          START_TS=$(date -d "${{ github.workflow_start_time }}" +%s 2>/dev/null || date -d "${START_TIME}" +%s)
+          END_TS=$(date -u '+%s')
+          DURATION=$((END_TS - START_TS))
           H=$((DURATION / 3600))
           M=$(((DURATION % 3600) / 60))
           S=$((DURATION % 60))
@@ -448,7 +460,7 @@ jobs:
                 .file-size { color: #666; font-size: 12px; }
                 .footer { margin-top: 20px; font-size: 12px; color: #6c757d; text-align: center; border-top: 1px solid #dee2e6; padding-top: 15px; }
                 .attachment-note { background: #fff3cd; border-left: 4px solid #ffc107; padding: 10px; margin: 15px 0; border-radius: 4px; }
-                .ip-box { background: #f0f0f0; border-radius: 4px; padding: 8px 12px; margin: 5px 0; font-family: monospace; font-size: 12px; white-space: pre-wrap; }
+                .ip-box { background: #f0f0f0; border-radius: 4px; padding: 8px 12px; margin: 5px 0; font-family: monospace; font-size: 12px; white-space: pre-wrap; line-height: 1.6; }
               </style>
             </head>
             <body>
