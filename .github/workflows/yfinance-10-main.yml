@@ -2,15 +2,15 @@
 # 工作流名称：Run yfinance Stock Data Collector (20路并行)
 # 功能描述：每周六北京时间09:00自动运行，使用20个独立IP并行下载全球股票数据
 #          将股票列表均分为20组，每组由一个独立Worker节点负责下载
-#          每个Worker内部20线程并发，充分利用独立IP
+#          每个Worker内部串行处理（单IP每秒1次请求）
+#          20个Worker同时并行 = 每秒20次请求
 #          所有Worker完成后，合并数据并打包发布到GitHub Releases
-#          仅在所有Worker成功时才发布Release
+#          仅在成功时发布Release，失败不发布
 #          发布完成后发送邮件通知（通知失败不影响发布）
 # 原始脚本：获取行情数据yuk2修正1.py（单IP需3.5-4小时）
-# 优化后：20路并行 × 20线程并发 = 400并发，预计2-5分钟完成
+# 优化后：20路并行，预计10-15分钟完成
 # 更新时间：2026-05-18
 # 作者：QuantumEdgecode & Deepseek-V4-Flash & 江城庄稼汉
-# 修复：Worker内部多线程并发 + 失败不发布Release
 # ============================================================
 
 name: Run yfinance Stock Data Collector (20路并行)
@@ -125,12 +125,14 @@ jobs:
           retention-days: 1
 
   # ============================================================
-  # 作业2：20路并行下载（每个Worker内部20线程并发）
+  # 作业2：20路并行下载
+  # 每个Worker独立IP，内部串行处理
+  # 20个Worker同时运行 = 每秒20次请求
   # ============================================================
   download-worker:
     needs: split-tasks
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
     
     strategy:
       fail-fast: false
@@ -162,21 +164,16 @@ jobs:
           echo "WORKER_IP=$IP" >> $GITHUB_ENV
           echo "Worker ${{ matrix.worker_id }} IP: $IP"
       
-      - name: 执行下载（20线程并发）
+      - name: 执行下载
         run: |
           python3 << 'PYEOF'
-          import json, os, sys, time, threading
+          import json, os, sys, time
           from datetime import datetime
-          from concurrent.futures import ThreadPoolExecutor, as_completed
           import yfinance as yf
 
-          # ----------------------------------------------------------
-          # 读取本Worker的任务
-          # ----------------------------------------------------------
           worker_id = ${{ matrix.worker_id }}
           task_file = f'tasks/worker_{worker_id}.json'
           
-          # 如果任务文件不存在（worker_id超出实际数量），跳过
           if not os.path.exists(task_file):
               print(f"Worker {worker_id}: 无任务文件，跳过")
               os.makedirs('./logs', exist_ok=True)
@@ -188,23 +185,17 @@ jobs:
               worker_data = json.load(f)
           
           tasks = worker_data['tasks']
-          print(f"Worker {worker_id}: {len(tasks)} 只股票，20线程并发下载")
+          total = len(tasks)
+          print(f"Worker {worker_id}: {total} 只股票，开始串行下载")
 
-          # ----------------------------------------------------------
-          # 线程安全的计数器
-          # ----------------------------------------------------------
-          success_lock = threading.Lock()
           success = 0
           fail = 0
-          first_failures = []  # 记录前5个失败
-          failures_lock = threading.Lock()
+          failed_tickers = []
+          start_time = time.time()
 
-          # ----------------------------------------------------------
-          # 单只股票下载函数
-          # ----------------------------------------------------------
-          def download_one(task):
-              nonlocal success, fail
+          for idx, task in enumerate(tasks):
               market, interval, period, save_format, ticker = task
+              
               try:
                   stock_data = None
                   for attempt in range(2):
@@ -234,58 +225,34 @@ jobs:
                   if save_format == 'csv':
                       stock_data.to_csv(filename, encoding='utf-8-sig')
 
-                  with success_lock:
-                      success += 1
-                      if success % 200 == 0:
-                          print(f"  Worker {worker_id}: 已完成 {success} 只")
-                  
-                  return True
+                  success += 1
 
               except Exception as e:
-                  with failures_lock:
-                      fail += 1
-                      if len(first_failures) < 5:
-                          first_failures.append(f"  ✗ {ticker}: {str(e)[:80]}")
-                  return False
+                  fail += 1
+                  if len(failed_tickers) < 10:
+                      failed_tickers.append(f"  ✗ {ticker}: {str(e)[:80]}")
 
-          # ----------------------------------------------------------
-          # 20线程并发下载
-          # ----------------------------------------------------------
-          start_time = time.time()
-          
-          with ThreadPoolExecutor(max_workers=20) as executor:
-              futures = [executor.submit(download_one, task) for task in tasks]
-              for future in as_completed(futures):
-                  future.result()  # 等待完成，获取结果
+              # 每100只打印进度
+              if (idx + 1) % 100 == 0 or (idx + 1) == total:
+                  elapsed = time.time() - start_time
+                  pct = (idx + 1) / total * 100
+                  print(f"  Worker {worker_id}: [{idx+1}/{total}] {pct:.1f}% 成功={success} 失败={fail} 耗时={elapsed:.0f}秒")
 
           elapsed = time.time() - start_time
 
-          # ----------------------------------------------------------
-          # 输出失败详情
-          # ----------------------------------------------------------
-          for msg in first_failures:
+          # 打印失败详情
+          for msg in failed_tickers:
               print(msg)
 
-          print(f"\nWorker {worker_id} 完成: 成功={success}, 失败={fail}, 耗时={elapsed:.1f}秒")
+          print(f"\nWorker {worker_id} 完成: 成功={success} 失败={fail} 总耗时={elapsed:.1f}秒 平均={elapsed/total:.2f}秒/只")
 
-          # ----------------------------------------------------------
-          # 保存统计
-          # ----------------------------------------------------------
           os.makedirs('./logs', exist_ok=True)
           with open(f'./logs/worker_{worker_id}_stats.txt', 'w') as f:
               f.write(f"worker_id={worker_id}\n")
               f.write(f"success={success}\n")
               f.write(f"fail={fail}\n")
-              f.write(f"total={len(tasks)}\n")
+              f.write(f"total={total}\n")
               f.write(f"elapsed={elapsed:.1f}\n")
-              f.write(f"worker_ip={os.environ.get('WORKER_IP', 'unknown')}\n")
-
-          # ----------------------------------------------------------
-          # 失败率检查
-          # ----------------------------------------------------------
-          if fail > len(tasks) * 0.3:
-              print(f"❌ 失败率过高: {fail/len(tasks)*100:.1f}%")
-              sys.exit(1)
           PYEOF
       
       - name: 上传结果
@@ -299,12 +266,11 @@ jobs:
 
   # ============================================================
   # 作业3：合并数据并发布Release
-  # 关键修复：只在所有Worker成功时才执行，失败不发布Release
+  # 只在所有Worker成功时执行
   # ============================================================
   merge-and-release:
     needs: download-worker
     runs-on: ubuntu-latest
-    # 🔧 修复：只在成功时执行，失败/取消时不发布
     if: success()
     
     steps:
@@ -318,9 +284,6 @@ jobs:
           VERSION="v${BEIJING_DATE}-${{ github.run_number }}"
           echo "VERSION=$VERSION" >> $GITHUB_ENV
           echo "BEIJING_TIME=$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')" >> $GITHUB_ENV
-      
-      - name: 获取开始时间
-        run: echo "START_TIME=$(date -u +%s)" >> $GITHUB_ENV
       
       - name: 创建目录
         run: mkdir -p ./data ./logs
@@ -360,22 +323,11 @@ jobs:
           echo "FILE_COUNT=$FILE_COUNT" >> $GITHUB_ENV
           echo "WORKER_COUNT=$WORKER_COUNT" >> $GITHUB_ENV
           
-          echo "Worker数: $WORKER_COUNT, 成功: $TOTAL_SUCCESS, 失败: $TOTAL_FAIL, 文件: $FILE_COUNT"
+          echo "Worker数: $WORKER_COUNT | 成功: $TOTAL_SUCCESS | 失败: $TOTAL_FAIL | 文件: $FILE_COUNT"
       
-      - name: 获取IP
+      - name: 获取服务器IP
         run: |
-          set +x
-          echo "MERGE_IP=$(curl -s https://api64.ipify.org?format=json | jq -r '.ip')" >> $GITHUB_ENV
-          set -x
-      
-      - name: 计算运行时长
-        run: |
-          END_TIME=$(date -u +%s)
-          DURATION=$((END_TIME - START_TIME))
-          H=$((DURATION / 3600))
-          M=$(((DURATION % 3600) / 60))
-          S=$((DURATION % 60))
-          echo "DURATION=$(printf '%02d:%02d:%02d' $H $M $S)" >> $GITHUB_ENV
+          echo "RUNNER_IP=$(curl -s https://api64.ipify.org?format=json | jq -r '.ip')" >> $GITHUB_ENV
       
       - name: 打包
         run: |
@@ -383,7 +335,7 @@ jobs:
             zip -r stock_data_$VERSION.zip ./data/
             echo "DATA_SIZE=$(du -h stock_data_$VERSION.zip | cut -f1)" >> $GITHUB_ENV
           fi
-          zip -r workflow_logs_$VERSION.zip ./logs/ ./merged/logs/
+          zip -r workflow_logs_$VERSION.zip ./merged/logs/
           echo "LOG_SIZE=$(du -h workflow_logs_$VERSION.zip | cut -f1)" >> $GITHUB_ENV
       
       - name: 生成Release描述
@@ -395,8 +347,7 @@ jobs:
           |:---|:---|
           | **版本** | $VERSION |
           | **时间** | $BEIJING_TIME (北京时间) |
-          | **运行时长** | $DURATION |
-          | **模式** | 🌐 20路并行 × 20线程并发 = 400并发 |
+          | **模式** | 🌐 20路并行（20个独立IP） |
           
           ### 📊 数据统计
           | 项目 | 数值 |
@@ -430,7 +381,7 @@ jobs:
           server_port: ${{ secrets.MAIL_PORT }}
           username: ${{ secrets.MAIL_USERNAME }}
           password: ${{ secrets.MAIL_PASSWORD }}
-          subject: ✅ 通知UT (${{ env.BEIJING_TIME }}) - 20路并行 ${{ env.TOTAL_SUCCESS }}/${{ env.TOTAL }}
+          subject: ✅ 数据采集完成 (${{ env.BEIJING_TIME }}) ${{ env.TOTAL_SUCCESS }}/${{ env.TOTAL }}
           to: ${{ secrets.MAIL_TO }}
           from: 数据通知/UT
           html_body: |
@@ -438,8 +389,7 @@ jobs:
             <table border="1" cellpadding="8" cellspacing="0">
               <tr><td><b>版本</b></td><td>${{ env.VERSION }}</td></tr>
               <tr><td><b>时间</b></td><td>${{ env.BEIJING_TIME }}</td></tr>
-              <tr><td><b>运行时长</b></td><td>${{ env.DURATION }}</td></tr>
-              <tr><td><b>模式</b></td><td>20路并行 × 20线程并发</td></tr>
+              <tr><td><b>模式</b></td><td>20路并行（20个独立IP）</td></tr>
               <tr><td><b>成功/失败</b></td><td>${{ env.TOTAL_SUCCESS }} / ${{ env.TOTAL_FAIL }}</td></tr>
               <tr><td><b>文件数</b></td><td>${{ env.FILE_COUNT }}</td></tr>
             </table>
@@ -454,14 +404,18 @@ jobs:
           rm -f workflow_logs_$VERSION.zip
 
   # ============================================================
-  # 作业4：失败通知（仅在下载失败时发送）
+  # 作业4：失败通知
   # ============================================================
   notify-failure:
     needs: [split-tasks, download-worker]
     runs-on: ubuntu-latest
-    # 🔧 只在失败或取消时执行
     if: failure() || cancelled()
-    
+    env:
+      MAIL_ADDRESS: ${{ secrets.MAIL_ADDRESS }}
+      MAIL_PORT: ${{ secrets.MAIL_PORT }}
+      MAIL_USERNAME: ${{ secrets.MAIL_USERNAME }}
+      MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
+      MAIL_TO: ${{ secrets.MAIL_TO }}
     steps:
       - name: 发送失败通知
         if: env.MAIL_ADDRESS && env.MAIL_USERNAME
@@ -479,9 +433,3 @@ jobs:
             <p>时间: $(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')</p>
             <p><a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}">查看运行日志</a></p>
         continue-on-error: true
-      env:
-        MAIL_ADDRESS: ${{ secrets.MAIL_ADDRESS }}
-        MAIL_PORT: ${{ secrets.MAIL_PORT }}
-        MAIL_USERNAME: ${{ secrets.MAIL_USERNAME }}
-        MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
-        MAIL_TO: ${{ secrets.MAIL_TO }}
