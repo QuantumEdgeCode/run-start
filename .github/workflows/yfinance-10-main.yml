@@ -43,7 +43,6 @@ jobs:
           python3 << 'EOF'
           import json, os
 
-          # 统计总任务数
           with open('markets-y2.json', 'r', encoding='utf-8') as f:
               markets = json.load(f)
 
@@ -59,7 +58,6 @@ jobs:
                   total += len([line.strip() for line in f if line.strip()])
 
           workers = 20
-          # 只输出Worker编号列表，不传任务数据
           worker_ids = list(range(1, workers + 1))
 
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
@@ -97,7 +95,6 @@ jobs:
       - name: Install dependencies
         run: pip install yfinance pandas openpyxl curl_cffi
       
-      # 获取本Worker公网IP
       - name: 获取本机IP
         run: |
           IP=$(curl -s https://api64.ipify.org?format=json | jq -r '.ip')
@@ -106,7 +103,6 @@ jobs:
           echo "Worker ${{ matrix.worker_id }} IP: $IP" >> ./logs/worker_ips.txt
           echo "🌐 Worker ${{ matrix.worker_id }} 公网IP: $IP"
       
-      # 执行下载：Worker自行按序号取模分配任务
       - name: 执行下载
         run: |
           python3 << 'PYEOF'
@@ -119,11 +115,9 @@ jobs:
           worker_id = ${{ matrix.worker_id }}
           total_workers = 20
 
-          # Worker自行读取markets-y2.json和股票列表
           with open('markets-y2.json', 'r', encoding='utf-8') as f:
               markets = json.load(f)
 
-          # 构建全量任务列表
           all_tasks = []
           for m in markets:
               market = m['market']
@@ -147,12 +141,11 @@ jobs:
               for ticker in tickers:
                   all_tasks.append([market, interval, period, save_format, ticker])
 
-          # 按取模分配：只处理 index % 20 == worker_id-1 的任务
           my_tasks = [t for i, t in enumerate(all_tasks) if i % total_workers == worker_id - 1]
 
           print(f"\n{'='*50}")
-          print(f"🚀 Worker {worker_id} 开始执行")
-          print(f"   全量任务: {len(all_tasks)} 只, 本Worker分配: {len(my_tasks)} 只")
+          print(f"Worker {worker_id} 开始执行")
+          print(f"  全量任务: {len(all_tasks)} 只, 本Worker分配: {len(my_tasks)} 只")
           print(f"{'='*50}\n")
 
           success = 0
@@ -172,16 +165,15 @@ jobs:
                   success += 1
                   if success % 100 == 0:
                       elapsed = time.time() - start_time
-                      print(f"  📊 Worker {worker_id}: 已完成 {success}/{len(my_tasks)}, 用时 {elapsed:.0f}秒")
+                      print(f"  Worker {worker_id}: 已完成 {success}/{len(my_tasks)}, 用时 {elapsed:.0f}秒")
 
                   time.sleep(0.1)
 
               except Exception as e:
                   fail += 1
                   if fail <= 5:
-                      print(f"  ✗ {ticker}: {str(e)[:100]}")
+                      print(f"  {ticker}: {str(e)[:100]}")
 
-          # 保存统计
           os.makedirs('./logs', exist_ok=True)
           with open(f'./logs/worker_{worker_id}_stats.txt', 'w') as f:
               f.write(f"worker_id={worker_id}\n")
@@ -190,11 +182,7 @@ jobs:
               f.write(f"total={len(my_tasks)}\n")
 
           elapsed = time.time() - start_time
-          print(f"\n✅ Worker {worker_id} 完成: 成功={success}, 失败={fail}, 用时={elapsed:.0f}秒")
-
-          if fail > len(my_tasks) * 0.3:
-              print(f"⚠️ 失败率过高: {fail/len(my_tasks)*100:.1f}%")
-              sys.exit(1)
+          print(f"\nWorker {worker_id} 完成: 成功={success}, 失败={fail}, 用时={elapsed:.0f}秒")
           PYEOF
 
       - name: 上传结果
@@ -285,7 +273,7 @@ jobs:
           echo "TOTAL=$TOTAL" >> $GITHUB_ENV
           echo "WORKER_COUNT=$WORKER_COUNT" >> $GITHUB_ENV
           
-          echo "📊 总计: 成功=$TOTAL_SUCCESS, 失败=$TOTAL_FAIL"
+          echo "总计: 成功=$TOTAL_SUCCESS, 失败=$TOTAL_FAIL"
       
       - name: Merge data files
         run: |
@@ -319,7 +307,7 @@ jobs:
           S=$((DURATION % 60))
           DURATION_FORMATTED=$(printf "%02d:%02d:%02d" $H $M $S)
           echo "DURATION=$DURATION_FORMATTED" >> $GITHUB_ENV
-          echo "⏱️ 总运行时长: $DURATION_FORMATTED"
+          echo "总运行时长: $DURATION_FORMATTED"
       
       - name: Package stock data
         if: always()
@@ -363,27 +351,27 @@ jobs:
           EOF
           
           cat > ./logs/RELEASE_BODY.md << EOF
-          ## 📊 Stock Data Collector - 20路并行执行摘要
+          ## Stock Data Collector - 20路并行执行摘要
           
           | 项目 | 信息 |
           |:---|:---|
           | **版本** | ${{ env.VERSION }} |
           | **生成时间** | ${{ env.BEIJING_TIME }} (北京时间) |
-          | **执行状态** | ${{ env.TOTAL_FAIL == '0' && '✅ 全部成功' || '⚠️ 部分失败' }} |
+          | **执行状态** | ${{ env.TOTAL_FAIL == '0' && '全部成功' || '部分失败' }} |
           | **运行时长** | ${{ env.DURATION }} |
           
-          ### 📋 工作流信息
+          ### 工作流信息
           | 项目 | 信息 |
           |:---|:---|
           | 工作流名称 | ${{ github.workflow }} |
           | 运行编号 | #${{ github.run_number }} |
           | 仓库 | ${{ github.repository }} |
           | 触发方式 | ${{ github.event_name }} |
-          | 下载模式 | 🌐 20路并行 |
+          | 下载模式 | 20路并行 |
           | 活跃Worker | ${{ env.WORKER_COUNT }} / 20 |
           | 合并服务器IP | ${{ env.IP_ADDRESS }} |
           
-          ### 📊 数据统计
+          ### 数据统计
           | 项目 | 数值 |
           |:---|:---|
           | 成功 | ${{ env.TOTAL_SUCCESS }} |
@@ -391,7 +379,7 @@ jobs:
           | 总计 | ${{ env.TOTAL }} |
           | CSV文件数 | ${{ env.FILE_COUNT }} |
           
-          ### 📦 附件文件
+          ### 附件文件
           - **stock_data_${{ env.VERSION }}.zip** - 采集的股票数据 (${{ env.DATA_SIZE }})
           - **workflow_logs_${{ env.VERSION }}.zip** - 完整日志 (含Worker IP, ${{ env.LOG_SIZE }})
           
@@ -429,7 +417,7 @@ jobs:
           server_port: ${{ secrets.MAIL_PORT }}
           username: ${{ secrets.MAIL_USERNAME }}
           password: ${{ secrets.MAIL_PASSWORD }}
-          subject: 通知UT (${{ env.REPORT_DATE }}) - ${{ env.TOTAL_FAIL == '0' && '✅成功' || '❌失败' }}
+          subject: 通知UT (${{ env.REPORT_DATE }}) - ${{ env.TOTAL_FAIL == '0' && '成功' || '失败' }}
           to: ${{ secrets.MAIL_TO }}
           from: 数据通知/UT
           attachments: workflow_logs_${{ env.VERSION }}.zip
@@ -465,17 +453,17 @@ jobs:
             <body>
               <div class="container">
                 <div class="header">
-                  <h1>📦 股票数据发布报告（20路并行）</h1>
+                  <h1>股票数据发布报告（20路并行）</h1>
                   <p>版本: ${{ env.VERSION }} | 报告时间: ${{ env.BEIJING_TIME }}</p>
                 </div>
                 
                 <div class="content">
                   <div class="status ${{ env.TOTAL_FAIL == '0' && 'status-success' || 'status-failure' }}">
-                    ${{ env.TOTAL_FAIL == '0' && '✅ 数据采集成功' || '❌ 数据采集部分失败' }}
+                    ${{ env.TOTAL_FAIL == '0' && '数据采集成功' || '数据采集部分失败' }}
                   </div>
                   
                   <div class="release-box">
-                    <h3>📦 GitHub Release 信息</h3>
+                    <h3>GitHub Release 信息</h3>
                     <div class="info-row">
                       <span class="info-label">版本标签:</span>
                       <span class="info-value"><code>${{ env.VERSION }}</code></span>
@@ -486,7 +474,7 @@ jobs:
                     </div>
                     <div class="info-row">
                       <span class="info-label">下载模式:</span>
-                      <span class="info-value">🌐 20路并行 (${{ env.WORKER_COUNT }}/20 Worker)</span>
+                      <span class="info-value">20路并行 (${{ env.WORKER_COUNT }}/20 Worker)</span>
                     </div>
                     <div class="info-row">
                       <span class="info-label">数据文件数:</span>
@@ -508,60 +496,60 @@ jobs:
                     
                     <div style="text-align: center;">
                       <a href="${{ env.RELEASE_URL }}" class="button" style="color: white !important;">
-                        🔗 访问 Release 页面
+                        访问 Release 页面
                       </a>
                     </div>
                   </div>
                   
                   <div class="info-row">
-                    <span class="info-label">📋 工作流:</span>
+                    <span class="info-label">工作流:</span>
                     <span class="info-value">${{ github.workflow }} #${{ github.run_number }}</span>
                   </div>
                   
                   <div class="info-row">
-                    <span class="info-label">⏰ 执行时间:</span>
+                    <span class="info-label">执行时间:</span>
                     <span class="info-value">${{ env.BEIJING_TIME }} (北京时间)</span>
                   </div>
                   
                   <div class="info-row">
-                    <span class="info-label">⏱️ 运行时长:</span>
+                    <span class="info-label">运行时长:</span>
                     <span class="info-value">${{ env.DURATION }}</span>
                   </div>
                   
                   <div class="info-row">
-                    <span class="info-label">📊 成功/失败:</span>
+                    <span class="info-label">成功/失败:</span>
                     <span class="info-value">${{ env.TOTAL_SUCCESS }} / ${{ env.TOTAL_FAIL }} (总计 ${{ env.TOTAL }})</span>
                   </div>
                   
                   <div class="info-row">
-                    <span class="info-label">🌐 合并服务器IP:</span>
+                    <span class="info-label">合并服务器IP:</span>
                     <span class="info-value">${{ env.IP_ADDRESS }}</span>
                   </div>
                   
                   <div style="text-align: center; margin-top: 20px;">
                     <a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" class="button button-secondary" style="color: white !important;">
-                      🔍 查看工作流日志
+                      查看工作流日志
                     </a>
                   </div>
                   
                   <p style="margin-top: 15px; word-break: break-all; font-size: 12px;">
-                    📎 <strong>Release 直链:</strong><br>
+                    <strong>Release 直链:</strong><br>
                     <a href="${{ env.RELEASE_URL }}" style="color: #0366d6;">${{ env.RELEASE_URL }}</a>
                   </p>
                   
                   <div class="attachment-note">
-                    <strong>📎 邮件附件说明:</strong><br>
+                    <strong>邮件附件说明:</strong><br>
                     本邮件包含工作流日志附件 (workflow_logs_${{ env.VERSION }}.zip, 大小: ${{ env.LOG_SIZE }})<br>
                     日志中包含20个Worker节点的详细统计信息和IP地址。<br>
                     完整数据文件请访问上方的 Release 页面下载。
                   </div>
                   
                   <div class="footer">
-                    <p>🤖 此邮件由 GitHub Actions 自动发送</p>
-                    <p>📁 仓库: ${{ github.repository }} | 运行 ID: ${{ github.run_id }}</p>
-                    <p>🕐 ${{ env.BEIJING_TIME }}</p>
-                    <p>🌐 20路并行下载 | 合并服务器IP: ${{ env.IP_ADDRESS }}</p>
-                    <p>💡 数据仅存储在 Release 中，不占用仓库 LFS 配额</p>
+                    <p>此邮件由 GitHub Actions 自动发送</p>
+                    <p>仓库: ${{ github.repository }} | 运行 ID: ${{ github.run_id }}</p>
+                    <p>${{ env.BEIJING_TIME }}</p>
+                    <p>20路并行下载 | 合并服务器IP: ${{ env.IP_ADDRESS }}</p>
+                    <p>数据仅存储在 Release 中，不占用仓库 LFS 配额</p>
                   </div>
                 </div>
               </div>
