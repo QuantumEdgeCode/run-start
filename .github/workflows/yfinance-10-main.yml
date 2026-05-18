@@ -18,36 +18,20 @@ name: 运行 yfinance 股票数据采集器（20路并行）
 # 触发条件配置
 # ============================================================
 on:
-  # 手动触发：允许在GitHub Actions页面手动运行
   workflow_dispatch:
-  
-  # 定时触发：每周六北京时间09:00执行
-  # cron表达式：分 时 日 月 周
-  # UTC 01:00 = 北京时间 09:00 (UTC+8)
   schedule:
     - cron: '0 1 * * 6'
 
 # ============================================================
 # 全局权限配置
-# contents: write → 允许创建和上传Release资源
-# actions: read  → 允许读取工作流运行信息
 # ============================================================
 permissions:
   contents: write
   actions: read
 
-# ============================================================
-# 作业定义（共3个作业）
-# 作业1 split-tasks      → 统计总任务数，输出20个Worker编号
-# 作业2 download-worker   → 20路并行下载股票数据（矩阵策略）
-# 作业3 merge-and-release → 合并数据、打包、发布Release、发送邮件
-# ============================================================
 jobs:
   # ============================================================
   # 作业1：拆分任务
-  # 功能：读取markets-y2.json和各市场股票代码文件，统计总任务数
-  #       输出20个Worker编号 [1,2,3,...,20]
-  # 关键：只传编号不传任务数据，输出远小于1MB限制
   # ============================================================
   split-tasks:
     runs-on: ubuntu-latest
@@ -89,12 +73,6 @@ jobs:
 
   # ============================================================
   # 作业2：20路并行下载股票数据
-  # 功能：使用矩阵策略同时运行20个Worker
-  #       每个Worker运行在独立虚拟机上，获得独立公网IP
-  #       每个Worker自行读取全量任务列表，按 index % 20 == worker_id-1 取模分配
-  #       调用仓库根目录「获取行情数据yuk2修正1.py」的 get_stock_data 和 write_data 函数
-  #       单个Worker失败不影响其他Worker（fail-fast: false）
-  #       每个Worker完成后将数据和日志打包为artifact上传
   # ============================================================
   download-worker:
     needs: split-tasks
@@ -182,16 +160,10 @@ jobs:
                   write_data(stock_data, ticker, save_dir, save_format)
 
                   success += 1
-                  if success % 100 == 0:
-                      elapsed = time.time() - start_time
-                      print(f"  Worker {worker_id}: 已完成 {success}/{len(my_tasks)} 只, 用时 {elapsed:.0f}秒")
-
                   time.sleep(0.1)
 
               except Exception as e:
                   fail += 1
-                  if fail <= 5:
-                      print(f"  Worker {worker_id}: {ticker} 失败 - {str(e)[:100]}")
 
           os.makedirs('./logs', exist_ok=True)
           with open(f'./logs/worker_{worker_id}_stats.txt', 'w') as f:
@@ -215,16 +187,6 @@ jobs:
 
   # ============================================================
   # 作业3：合并数据并发布Release
-  # 功能：等待所有20个Worker完成后执行（即使部分失败也执行）
-  #       下载所有Worker的artifact到 ./merged 集中缓存目录
-  #       收集所有Worker的统计信息和20个节点的IP地址
-  #       合并股票数据到统一的 ./data 目录
-  #       使用 github.workflow_start_time 计算工作流真实总运行时长
-  #       打包数据和日志为ZIP文件
-  #       创建GitHub Release并上传数据包
-  #       发送HTML邮件通知（含20个节点IP、统计信息、Release链接）
-  #       邮件发送失败不影响整体流程
-  #       最后清理临时文件
   # ============================================================
   merge-and-release:
     needs: download-worker
@@ -264,12 +226,10 @@ jobs:
             echo "无IP数据" > ./logs/node_ips.txt
           fi
           
-          # 读取排序后的IP列表，存入环境变量供邮件使用
-          # 使用 base64 编码避免多行文本在环境变量中被截断
-          WORKER_IP_LIST=$(cat ./logs/node_ips.txt)
-          echo "WORKER_IP_LIST<<EOF" >> $GITHUB_ENV
-          echo "$WORKER_IP_LIST" >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
+          # 关键修复：将多行IP列表转为单行HTML格式（用<br/>连接）
+          # 环境变量不支持多行文本，单行不会被截断
+          WORKER_IP_HTML=$(cat ./logs/node_ips.txt | sed 's/$/<br\/>/' | tr -d '\n')
+          echo "WORKER_IP_HTML=$WORKER_IP_HTML" >> $GITHUB_ENV
           
           # 生成统计汇总文件
           echo "# 20路并行Worker统计汇总" > ./logs/workers_summary.txt
@@ -313,15 +273,6 @@ jobs:
           echo "TOTAL=$TOTAL" >> $GITHUB_ENV
           echo "WORKER_COUNT=$WORKER_COUNT" >> $GITHUB_ENV
           
-          echo "============================================="
-          echo "  20路并行统计汇总"
-          echo "============================================="
-          echo "  活跃Worker: $WORKER_COUNT / 20"
-          echo "  成功: $TOTAL_SUCCESS 只"
-          echo "  失败: $TOTAL_FAIL 只"
-          echo "  总计: $TOTAL 只"
-          echo "============================================="
-          echo ""
           echo "节点IP列表:"
           cat ./logs/node_ips.txt
       
@@ -338,13 +289,10 @@ jobs:
             echo "HAS_DATA=false" >> $GITHUB_ENV
           fi
       
-      # 使用 GitHub 提供的 github.workflow_start_time 计算真实总运行时长
-      # 这是整个工作流开始的时间，不是单个job的时间
       - name: 计算工作流总运行时长
         if: always()
         run: |
-          # github.workflow_start_time 格式：2026-05-18T13:00:00.000Z
-          START_TS=$(date -d "${{ github.workflow_start_time }}" +%s 2>/dev/null || date -d "${START_TIME}" +%s)
+          START_TS=$(date -d "${{ github.workflow_start_time }}" +%s)
           END_TS=$(date -u '+%s')
           DURATION=$((END_TS - START_TS))
           H=$((DURATION / 3600))
@@ -387,7 +335,7 @@ jobs:
           | **活跃Worker** | ${{ env.WORKER_COUNT }} / 20 |
           
           ### 节点IP
-          ${{ env.WORKER_IP_LIST }}
+          ${{ env.WORKER_IP_HTML }}
           
           ### 数据统计
           | 项目 | 数值 |
@@ -460,7 +408,7 @@ jobs:
                 .file-size { color: #666; font-size: 12px; }
                 .footer { margin-top: 20px; font-size: 12px; color: #6c757d; text-align: center; border-top: 1px solid #dee2e6; padding-top: 15px; }
                 .attachment-note { background: #fff3cd; border-left: 4px solid #ffc107; padding: 10px; margin: 15px 0; border-radius: 4px; }
-                .ip-box { background: #f0f0f0; border-radius: 4px; padding: 8px 12px; margin: 5px 0; font-family: monospace; font-size: 12px; white-space: pre-wrap; line-height: 1.6; }
+                .ip-box { background: #f0f0f0; border-radius: 4px; padding: 8px 12px; margin: 5px 0; font-family: monospace; font-size: 12px; line-height: 1.8; }
               </style>
             </head>
             <body>
@@ -533,7 +481,7 @@ jobs:
                   <div class="info-row">
                     <span class="info-label">节点IP:</span>
                     <span class="info-value">
-                      <div class="ip-box">${{ env.WORKER_IP_LIST }}</div>
+                      <div class="ip-box">${{ env.WORKER_IP_HTML }}</div>
                     </span>
                   </div>
                   
