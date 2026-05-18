@@ -2,13 +2,15 @@
 # 工作流名称：Run yfinance Stock Data Collector (20路并行)
 # 功能描述：每周六北京时间09:00自动运行，使用20个独立IP并行下载全球股票数据
 #          将股票列表均分为20组，每组由一个独立Worker节点负责下载
+#          每个Worker内部20线程并发，充分利用独立IP
 #          所有Worker完成后，合并数据并打包发布到GitHub Releases
+#          仅在所有Worker成功时才发布Release
 #          发布完成后发送邮件通知（通知失败不影响发布）
 # 原始脚本：获取行情数据yuk2修正1.py（单IP需3.5-4小时）
-# 优化后：20路并行，预计10-15分钟完成
+# 优化后：20路并行 × 20线程并发 = 400并发，预计2-5分钟完成
 # 更新时间：2026-05-18
 # 作者：QuantumEdgecode & Deepseek-V4-Flash & 江城庄稼汉
-# 修复：解决Job outputs超过1MB限制的问题
+# 修复：Worker内部多线程并发 + 失败不发布Release
 # ============================================================
 
 name: Run yfinance Stock Data Collector (20路并行)
@@ -17,22 +19,16 @@ name: Run yfinance Stock Data Collector (20路并行)
 # 触发条件配置
 # ============================================================
 on:
-  # 手动触发：允许在GitHub Actions页面手动运行
   workflow_dispatch:
-  
-  # 定时触发：每周六北京时间09:00执行
-  # cron表达式：分 时 日 月 周
-  # UTC 01:00 = 北京时间 09:00 (UTC+8)
   schedule:
-    - cron: '0 1 * * 6'
+    - cron: '0 1 * * 6'  # 每周六北京时间09:00
 
 # ============================================================
 # 全局权限配置
-# 解决"Resource not accessible by integration"权限错误
 # ============================================================
 permissions:
-  contents: write  # 允许创建和上传Release资源
-  actions: read    # 允许读取工作流运行信息
+  contents: write
+  actions: read
 
 # ============================================================
 # 作业定义
@@ -40,130 +36,80 @@ permissions:
 jobs:
   # ============================================================
   # 作业1：拆分股票列表为20份
-  # 功能：读取markets-y2.json市场配置和各市场股票代码文件
-  #       将所有股票代码汇总后，平均拆分为20组
-  #       每组作为一个独立任务，通过Artifact传递给后续Worker
-  # 修复：使用Artifact传递任务文件，避免outputs超过1MB限制
   # ============================================================
   split-tasks:
-    # 运行环境：Ubuntu最新版
     runs-on: ubuntu-latest
-    
-    # 输出变量：只输出元数据，不输出大量任务数据
     outputs:
       total_workers: ${{ steps.split.outputs.total_workers }}
       total_tasks: ${{ steps.split.outputs.total_tasks }}
-    
     steps:
-      # ----------------------------------------------------------
-      # 步骤1.1：检出仓库代码
-      # 获取markets-y2.json和所有股票代码文件
-      # ----------------------------------------------------------
       - name: Checkout Repository
         uses: actions/checkout@v4
       
-      # ----------------------------------------------------------
-      # 步骤1.2：拆分任务并保存为独立文件
-      # 每个Worker的任务保存为单独的文件：tasks/worker_1.json ~ worker_20.json
-      # 通过Artifact上传所有任务文件，供后续Worker下载
-      # 修复：不再通过outputs传递大JSON，避免超过1MB限制
-      # ----------------------------------------------------------
       - name: 拆分任务
         id: split
         run: |
-          # 使用Python读取markets-y2.json，将所有股票平均拆分为20组
           python3 << 'EOF'
           import json, os
 
-          # ----------------------------------------------------------
-          # 第1步：加载市场配置文件
-          # markets-y2.json包含每个市场的参数：
-          #   market: 市场名称
-          #   interval: K线周期（1m/5m/1d等）
-          #   period: 数据范围（max/1y/6mo等）
-          #   save_format: 保存格式（csv）
-          #   file_name: 股票代码列表文件名
-          # ----------------------------------------------------------
           with open('markets-y2.json', 'r', encoding='utf-8') as f:
               markets = json.load(f)
 
-          # ----------------------------------------------------------
-          # 第2步：遍历所有市场，收集全部股票任务
-          # 每个任务包含：[市场名, K线周期, 数据范围, 保存格式, 股票代码]
-          # ----------------------------------------------------------
           all_tasks = []
           for m in markets:
-              market = m['market']           # 市场名称，如"hk"、"us"
-              interval = m['interval']       # K线周期，如"1d"、"1m"
-              period = m['period']           # 数据范围，如"max"、"1y"
-              save_format = m['save_format'] # 文件格式，如"csv"
-              file_name = m['file_name']     # 股票代码文件名
+              market = m['market']
+              interval = m['interval']
+              period = m['period']
+              save_format = m['save_format']
+              file_name = m['file_name']
 
-              # 修正：1分钟线数据的period不能超过7天
               if interval == "1m" and period == "max":
                   period = "7d"
 
-              # 查找股票代码文件（先找根目录，再找yfcode-list子目录）
               code_file = f"./{file_name}"
               if not os.path.exists(code_file):
                   code_file = f"./yfcode-list/{file_name}"
               if not os.path.exists(code_file):
                   print(f"警告：未找到股票代码文件 {file_name}，跳过市场 {market}")
-                  continue  # 文件不存在则跳过该市场
+                  continue
 
-              # 读取股票代码列表（每行一个代码，跳过空行）
               with open(code_file, 'r', encoding='utf-8') as f:
                   tickers = [line.strip() for line in f if line.strip()]
 
               print(f"市场 {market}: {len(tickers)} 只股票")
 
-              # 将每个股票代码封装为任务
               for ticker in tickers:
                   all_tasks.append([market, interval, period, save_format, ticker])
 
-          # ----------------------------------------------------------
-          # 第3步：将总任务平均拆分为20组
-          # chunk_size：每组大约包含的任务数（向上取整）
-          # ----------------------------------------------------------
           total = len(all_tasks)
-          workers = 20  # Worker节点数量
-          chunk_size = (total + workers - 1) // workers  # 向上取整
+          workers = 20
+          chunk_size = (total + workers - 1) // workers
 
           print(f"\n总股票数: {total}")
           print(f"Worker数量: {workers}")
           print(f"每组约: {chunk_size} 只股票")
 
-          # ----------------------------------------------------------
-          # 第4步：创建tasks目录，每个Worker的任务保存为独立JSON文件
-          # 文件名：tasks/worker_1.json ~ worker_20.json
-          # 每个文件内容：{ "worker_id": N, "tasks": [[...], ...], "task_count": N }
-          # ----------------------------------------------------------
           os.makedirs('tasks', exist_ok=True)
           
           actual_workers = 0
           for i in range(workers):
-              start = i * chunk_size          # 起始索引
-              end = min(start + chunk_size, total)  # 结束索引
-              if start < total:               # 确保有任务才创建
+              start = i * chunk_size
+              end = min(start + chunk_size, total)
+              if start < total:
                   actual_workers += 1
                   chunk = all_tasks[start:end]
                   worker_data = {
                       "worker_id": i + 1,
-                      "tasks": chunk,         # 直接保存数组，不需要JSON字符串
+                      "tasks": chunk,
                       "task_count": len(chunk)
                   }
                   
-                  # 保存为JSON文件
                   task_file = f'tasks/worker_{i + 1}.json'
                   with open(task_file, 'w', encoding='utf-8') as f:
                       json.dump(worker_data, f, ensure_ascii=False)
                   
                   print(f"  Worker {i + 1}: {len(chunk)} 只股票 -> {task_file}")
 
-          # ----------------------------------------------------------
-          # 第5步：输出元数据（只输出数字，不输出大量数据）
-          # 避免超过GitHub Actions的1MB outputs限制
-          # ----------------------------------------------------------
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
               f.write(f"total_workers={actual_workers}\n")
               f.write(f"total_tasks={total}\n")
@@ -171,10 +117,6 @@ jobs:
           print(f"\n任务拆分完成！共 {actual_workers} 个Worker，{total} 个任务")
           EOF
       
-      # ----------------------------------------------------------
-      # 步骤1.3：上传所有任务文件为Artifact
-      # 所有Worker的任务文件打包为：task-files
-      # ----------------------------------------------------------
       - name: 上传任务文件
         uses: actions/upload-artifact@v4
         with:
@@ -183,123 +125,87 @@ jobs:
           retention-days: 1
 
   # ============================================================
-  # 作业2：20路并行下载
-  # 功能：每个Worker节点获取独立公网IP，下载分配给自己的股票数据
-  #       使用矩阵策略并行运行最多20个Worker
-  #       单个Worker失败不影响其他Worker继续执行
-  #       每个Worker完成后将数据打包为artifact上传
-  # 修复：通过Artifact下载任务文件，不再依赖outputs
+  # 作业2：20路并行下载（每个Worker内部20线程并发）
   # ============================================================
   download-worker:
-    # 依赖：等待任务拆分完成后才开始
     needs: split-tasks
-    
-    # 运行环境：Ubuntu最新版
     runs-on: ubuntu-latest
-    
-    # 超时设置：单个Worker最多运行60分钟
     timeout-minutes: 60
     
-    # ----------------------------------------------------------
-    # 矩阵策略：并行运行最多20个Worker
-    # 使用简单的数字矩阵（1到total_workers）
-    # 每个Worker根据自己的worker_id下载对应的任务文件
-    # ----------------------------------------------------------
     strategy:
       fail-fast: false
       max-parallel: 20
       matrix:
-        worker_id: ${{ fromJson(format('[1,{0}]', needs.split-tasks.outputs.total_workers)) }}
-        # 生成数组 [1, 2, 3, ..., total_workers]
+        worker_id: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
     
     steps:
-      # ----------------------------------------------------------
-      # 步骤2.1：检出仓库代码
-      # ----------------------------------------------------------
       - name: Checkout Repository
         uses: actions/checkout@v4
       
-      # ----------------------------------------------------------
-      # 步骤2.2：下载本Worker的任务文件
-      # 从task-files artifact中下载所有任务文件
-      # 只读取属于本Worker的文件（worker_{id}.json）
-      # ----------------------------------------------------------
       - name: 下载任务文件
         uses: actions/download-artifact@v4
         with:
           name: task-files
           path: tasks
       
-      # ----------------------------------------------------------
-      # 步骤2.3：显示本Worker的任务文件内容（调试用）
-      # ----------------------------------------------------------
-      - name: 检查任务文件
-        run: |
-          echo "任务文件列表:"
-          ls -la tasks/
-          echo ""
-          echo "本Worker (${{ matrix.worker_id }}) 的任务文件:"
-          cat tasks/worker_${{ matrix.worker_id }}.json | python3 -m json.tool | head -20
-      
-      # ----------------------------------------------------------
-      # 步骤2.4：配置Python环境
-      # ----------------------------------------------------------
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       
-      # ----------------------------------------------------------
-      # 步骤2.5：安装Python依赖
-      # ----------------------------------------------------------
       - name: Install dependencies
         run: pip install yfinance pandas openpyxl curl_cffi
       
-      # ----------------------------------------------------------
-      # 步骤2.6：获取本Worker的公网IP地址
-      # ----------------------------------------------------------
       - name: 获取IP
         run: |
           IP=$(curl -s https://api64.ipify.org?format=json | jq -r '.ip')
           echo "WORKER_IP=$IP" >> $GITHUB_ENV
           echo "Worker ${{ matrix.worker_id }} IP: $IP"
       
-      # ----------------------------------------------------------
-      # 步骤2.7：执行股票数据下载
-      # 从本地JSON文件读取任务，不再通过环境变量传递
-      # 修复：避免环境变量超过限制
-      # ----------------------------------------------------------
-      - name: 执行下载
+      - name: 执行下载（20线程并发）
         run: |
           python3 << 'PYEOF'
-          import json, os, sys, time
+          import json, os, sys, time, threading
           from datetime import datetime
+          from concurrent.futures import ThreadPoolExecutor, as_completed
           import yfinance as yf
 
           # ----------------------------------------------------------
-          # 第1步：从本地JSON文件读取本Worker的任务
-          # 不再通过环境变量传递，避免超过大小限制
+          # 读取本Worker的任务
           # ----------------------------------------------------------
           worker_id = ${{ matrix.worker_id }}
           task_file = f'tasks/worker_{worker_id}.json'
+          
+          # 如果任务文件不存在（worker_id超出实际数量），跳过
+          if not os.path.exists(task_file):
+              print(f"Worker {worker_id}: 无任务文件，跳过")
+              os.makedirs('./logs', exist_ok=True)
+              with open(f'./logs/worker_{worker_id}_stats.txt', 'w') as f:
+                  f.write(f"worker_id={worker_id}\nsuccess=0\nfail=0\ntotal=0\n")
+              sys.exit(0)
           
           with open(task_file, 'r', encoding='utf-8') as f:
               worker_data = json.load(f)
           
           tasks = worker_data['tasks']
-          print(f"Worker {worker_id}: 处理 {len(tasks)} 只股票")
+          print(f"Worker {worker_id}: {len(tasks)} 只股票，20线程并发下载")
 
-          # 初始化成功/失败计数器
+          # ----------------------------------------------------------
+          # 线程安全的计数器
+          # ----------------------------------------------------------
+          success_lock = threading.Lock()
           success = 0
           fail = 0
+          first_failures = []  # 记录前5个失败
+          failures_lock = threading.Lock()
 
           # ----------------------------------------------------------
-          # 第2步：遍历所有任务，逐个下载股票数据
+          # 单只股票下载函数
           # ----------------------------------------------------------
-          for task in tasks:
+          def download_one(task):
+              nonlocal success, fail
               market, interval, period, save_format, ticker = task
               try:
-                  # 使用yfinance获取股票历史数据
                   stock_data = None
                   for attempt in range(2):
                       try:
@@ -307,15 +213,14 @@ jobs:
                           stock_data = stock.history(period=period, interval=interval)
                           if stock_data is not None and not stock_data.empty:
                               break
-                      except Exception as e:
+                      except:
                           if attempt == 1:
                               raise
-                          time.sleep(2)
+                          time.sleep(1)
 
                   if stock_data is None or stock_data.empty:
                       raise ValueError("No data")
 
-                  # 保存数据到文件
                   date_str = datetime.now().strftime('%Y-%m-%d')
                   save_dir = f"./data/{market}/{interval}/{date_str}"
                   os.makedirs(save_dir, exist_ok=True)
@@ -329,20 +234,42 @@ jobs:
                   if save_format == 'csv':
                       stock_data.to_csv(filename, encoding='utf-8-sig')
 
-                  success += 1
+                  with success_lock:
+                      success += 1
+                      if success % 200 == 0:
+                          print(f"  Worker {worker_id}: 已完成 {success} 只")
                   
-                  if success % 100 == 0:
-                      print(f"  Worker {worker_id}: 已完成 {success} 只")
-
-                  time.sleep(0.1)
+                  return True
 
               except Exception as e:
-                  fail += 1
-                  if fail <= 5:
-                      print(f"  ✗ {ticker}: {str(e)[:100]}")
+                  with failures_lock:
+                      fail += 1
+                      if len(first_failures) < 5:
+                          first_failures.append(f"  ✗ {ticker}: {str(e)[:80]}")
+                  return False
 
           # ----------------------------------------------------------
-          # 第3步：保存本Worker的统计信息
+          # 20线程并发下载
+          # ----------------------------------------------------------
+          start_time = time.time()
+          
+          with ThreadPoolExecutor(max_workers=20) as executor:
+              futures = [executor.submit(download_one, task) for task in tasks]
+              for future in as_completed(futures):
+                  future.result()  # 等待完成，获取结果
+
+          elapsed = time.time() - start_time
+
+          # ----------------------------------------------------------
+          # 输出失败详情
+          # ----------------------------------------------------------
+          for msg in first_failures:
+              print(msg)
+
+          print(f"\nWorker {worker_id} 完成: 成功={success}, 失败={fail}, 耗时={elapsed:.1f}秒")
+
+          # ----------------------------------------------------------
+          # 保存统计
           # ----------------------------------------------------------
           os.makedirs('./logs', exist_ok=True)
           with open(f'./logs/worker_{worker_id}_stats.txt', 'w') as f:
@@ -350,18 +277,17 @@ jobs:
               f.write(f"success={success}\n")
               f.write(f"fail={fail}\n")
               f.write(f"total={len(tasks)}\n")
+              f.write(f"elapsed={elapsed:.1f}\n")
+              f.write(f"worker_ip={os.environ.get('WORKER_IP', 'unknown')}\n")
 
-          print(f"Worker {worker_id} 完成: 成功={success}, 失败={fail}")
-
-          # 检查失败率
+          # ----------------------------------------------------------
+          # 失败率检查
+          # ----------------------------------------------------------
           if fail > len(tasks) * 0.3:
-              print(f"失败率过高: {fail/len(tasks)*100:.1f}%")
+              print(f"❌ 失败率过高: {fail/len(tasks)*100:.1f}%")
               sys.exit(1)
           PYEOF
-
-      # ----------------------------------------------------------
-      # 步骤2.8：上传本Worker的下载结果
-      # ----------------------------------------------------------
+      
       - name: 上传结果
         uses: actions/upload-artifact@v4
         with:
@@ -373,11 +299,13 @@ jobs:
 
   # ============================================================
   # 作业3：合并数据并发布Release
+  # 关键修复：只在所有Worker成功时才执行，失败不发布Release
   # ============================================================
   merge-and-release:
     needs: download-worker
     runs-on: ubuntu-latest
-    if: always()
+    # 🔧 修复：只在成功时执行，失败/取消时不发布
+    if: success()
     
     steps:
       - name: Checkout Repository
@@ -412,12 +340,14 @@ jobs:
           
           TOTAL_SUCCESS=0
           TOTAL_FAIL=0
+          WORKER_COUNT=0
           
           for stats_file in ./merged/logs/worker_*_stats.txt; do
             if [ -f "$stats_file" ]; then
               source "$stats_file"
               TOTAL_SUCCESS=$((TOTAL_SUCCESS + success))
               TOTAL_FAIL=$((TOTAL_FAIL + fail))
+              WORKER_COUNT=$((WORKER_COUNT + 1))
             fi
           done
           
@@ -428,8 +358,9 @@ jobs:
           echo "TOTAL_FAIL=$TOTAL_FAIL" >> $GITHUB_ENV
           echo "TOTAL=$TOTAL" >> $GITHUB_ENV
           echo "FILE_COUNT=$FILE_COUNT" >> $GITHUB_ENV
+          echo "WORKER_COUNT=$WORKER_COUNT" >> $GITHUB_ENV
           
-          echo "总计: 成功=$TOTAL_SUCCESS, 失败=$TOTAL_FAIL, 文件=$FILE_COUNT"
+          echo "Worker数: $WORKER_COUNT, 成功: $TOTAL_SUCCESS, 失败: $TOTAL_FAIL, 文件: $FILE_COUNT"
       
       - name: 获取IP
         run: |
@@ -465,11 +396,12 @@ jobs:
           | **版本** | $VERSION |
           | **时间** | $BEIJING_TIME (北京时间) |
           | **运行时长** | $DURATION |
-          | **模式** | 🌐 20路并行 |
+          | **模式** | 🌐 20路并行 × 20线程并发 = 400并发 |
           
           ### 📊 数据统计
           | 项目 | 数值 |
           |:---|:---|
+          | Worker数 | $WORKER_COUNT |
           | 成功 | $TOTAL_SUCCESS |
           | 失败 | $TOTAL_FAIL |
           | 总计 | $TOTAL |
@@ -492,14 +424,13 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
       - name: 发送邮件通知
-        if: always()
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: ${{ secrets.MAIL_ADDRESS }}
           server_port: ${{ secrets.MAIL_PORT }}
           username: ${{ secrets.MAIL_USERNAME }}
           password: ${{ secrets.MAIL_PASSWORD }}
-          subject: 通知UT (${{ env.BEIJING_TIME }}) - 20路并行 ${{ env.TOTAL_SUCCESS }}/${{ env.TOTAL }}
+          subject: ✅ 通知UT (${{ env.BEIJING_TIME }}) - 20路并行 ${{ env.TOTAL_SUCCESS }}/${{ env.TOTAL }}
           to: ${{ secrets.MAIL_TO }}
           from: 数据通知/UT
           html_body: |
@@ -508,6 +439,7 @@ jobs:
               <tr><td><b>版本</b></td><td>${{ env.VERSION }}</td></tr>
               <tr><td><b>时间</b></td><td>${{ env.BEIJING_TIME }}</td></tr>
               <tr><td><b>运行时长</b></td><td>${{ env.DURATION }}</td></tr>
+              <tr><td><b>模式</b></td><td>20路并行 × 20线程并发</td></tr>
               <tr><td><b>成功/失败</b></td><td>${{ env.TOTAL_SUCCESS }} / ${{ env.TOTAL_FAIL }}</td></tr>
               <tr><td><b>文件数</b></td><td>${{ env.FILE_COUNT }}</td></tr>
             </table>
@@ -520,3 +452,36 @@ jobs:
           rm -rf ./merged
           rm -f stock_data_$VERSION.zip
           rm -f workflow_logs_$VERSION.zip
+
+  # ============================================================
+  # 作业4：失败通知（仅在下载失败时发送）
+  # ============================================================
+  notify-failure:
+    needs: [split-tasks, download-worker]
+    runs-on: ubuntu-latest
+    # 🔧 只在失败或取消时执行
+    if: failure() || cancelled()
+    
+    steps:
+      - name: 发送失败通知
+        if: env.MAIL_ADDRESS && env.MAIL_USERNAME
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.MAIL_ADDRESS }}
+          server_port: ${{ secrets.MAIL_PORT }}
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          subject: ❌ 数据采集失败 - $(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')
+          to: ${{ secrets.MAIL_TO }}
+          from: 数据通知/UT
+          html_body: |
+            <h2>❌ 20路并行数据采集失败</h2>
+            <p>时间: $(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')</p>
+            <p><a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}">查看运行日志</a></p>
+        continue-on-error: true
+      env:
+        MAIL_ADDRESS: ${{ secrets.MAIL_ADDRESS }}
+        MAIL_PORT: ${{ secrets.MAIL_PORT }}
+        MAIL_USERNAME: ${{ secrets.MAIL_USERNAME }}
+        MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
+        MAIL_TO: ${{ secrets.MAIL_TO }}
