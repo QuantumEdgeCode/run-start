@@ -9,7 +9,7 @@
 # 原始脚本：获取行情数据yuk2修正1.py（单IP需3.5-4小时）
 # 优化后：20路并行，预计10-15分钟完成
 # 作者：QuantumEdgecode & Deepseek-V4-Flash & 江城庄稼汉
-# 更新时间：2026-05-18
+# 更新时间：2026-05-19
 # ============================================================
 
 name: 运行 yfinance 股票数据采集器（20路并行）
@@ -20,7 +20,7 @@ name: 运行 yfinance 股票数据采集器（20路并行）
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 1 * * 6'
+    - cron: '0 1 * * 6' # 每周六北京时间上午9点执行
 
 # ============================================================
 # 全局权限配置
@@ -226,8 +226,7 @@ jobs:
             echo "无IP数据" > ./logs/node_ips.txt
           fi
           
-          # 关键修复：将多行IP列表转为单行HTML格式（用<br/>连接）
-          # 环境变量不支持多行文本，单行不会被截断
+          # 将多行IP列表转为单行HTML格式（用<br/>连接）
           WORKER_IP_HTML=$(cat ./logs/node_ips.txt | sed 's/$/<br\/>/' | tr -d '\n')
           echo "WORKER_IP_HTML=$WORKER_IP_HTML" >> $GITHUB_ENV
           
@@ -272,6 +271,13 @@ jobs:
           echo "TOTAL_FAIL=$TOTAL_FAIL" >> $GITHUB_ENV
           echo "TOTAL=$TOTAL" >> $GITHUB_ENV
           echo "WORKER_COUNT=$WORKER_COUNT" >> $GITHUB_ENV
+          
+          # 判断整体执行状态
+          if [ "$TOTAL_FAIL" -eq "0" ] && [ "$WORKER_COUNT" -eq "20" ]; then
+            echo "OVERALL_STATUS=success" >> $GITHUB_ENV
+          else
+            echo "OVERALL_STATUS=failure" >> $GITHUB_ENV
+          fi
           
           echo "节点IP列表:"
           cat ./logs/node_ips.txt
@@ -324,32 +330,45 @@ jobs:
         if: always()
         run: |
           cat > ./release_body.md << EOF
-          ## Stock Data Collector - 20路并行
+          ## 📊 Stock Data Collector - 20路并行执行摘要
           
           | 项目 | 信息 |
           |:---|:---|
           | **版本** | ${{ env.VERSION }} |
-          | **时间** | ${{ env.BEIJING_TIME }} (北京时间) |
+          | **生成时间** | ${{ env.BEIJING_TIME }} (北京时间) |
+          | **执行状态** | ${{ env.OVERALL_STATUS == 'success' && '✅ 成功' || '⚠️ 部分失败' }} |
           | **运行时长** | ${{ env.DURATION }} |
-          | **模式** | 20路并行 |
-          | **活跃Worker** | ${{ env.WORKER_COUNT }} / 20 |
           
-          ### 节点IP
+          ### 📋 工作流信息
+          | 项目 | 信息 |
+          |:---|:---|
+          | 工作流名称 | ${{ github.workflow }} |
+          | 运行编号 | #${{ github.run_number }} |
+          | 仓库 | ${{ github.repository }} |
+          | 分支 | ${{ github.ref_name }} |
+          | 触发方式 | ${{ github.event_name }} |
+          | 下载模式 | 20路并行 (${{ env.WORKER_COUNT }}/20 Worker活跃) |
+          
+          ### 🌐 节点IP地址
           ${{ env.WORKER_IP_HTML }}
           
-          ### 数据统计
+          ### 📊 数据采集统计
           | 项目 | 数值 |
           |:---|:---|
-          | 成功 | ${{ env.TOTAL_SUCCESS }} |
-          | 失败 | ${{ env.TOTAL_FAIL }} |
-          | 总计 | ${{ env.TOTAL }} |
-          | CSV文件数 | ${{ env.FILE_COUNT }} |
+          | ✅ 成功 | ${{ env.TOTAL_SUCCESS }} |
+          | ❌ 失败 | ${{ env.TOTAL_FAIL }} |
+          | 📦 总计 | ${{ env.TOTAL }} |
+          | 📄 CSV文件数 | ${{ env.FILE_COUNT }} |
           
-          ### 附件
-          - stock_data_${{ env.VERSION }}.zip (${{ env.DATA_SIZE }})
-          - workflow_logs_${{ env.VERSION }}.zip (${{ env.LOG_SIZE }})
+          ### 📦 附件文件
+          - **stock_data_${{ env.VERSION }}.zip** (${{ env.DATA_SIZE }}) - 采集的股票数据
+          - **workflow_logs_${{ env.VERSION }}.zip** (${{ env.LOG_SIZE }}) - 完整工作流日志及20节点统计
           
-          [查看运行日志](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          ### 🔗 相关链接
+          - [查看工作流运行](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          
+          ---
+          *此 Release 由 GitHub Actions 自动生成 · 20路并行采集*
           EOF
       
       - name: 获取Release页面链接
@@ -380,7 +399,7 @@ jobs:
           server_port: ${{ secrets.MAIL_PORT }}
           username: ${{ secrets.MAIL_USERNAME }}
           password: ${{ secrets.MAIL_PASSWORD }}
-          subject: 通知UT (${{ env.REPORT_DATE }})
+          subject: 通知UT (${{ env.REPORT_DATE }}) - ${{ env.OVERALL_STATUS == 'success' && '✅成功' || '⚠️部分失败' }}
           to: ${{ secrets.MAIL_TO }}
           from: 数据通知/UT
           attachments: workflow_logs_${{ env.VERSION }}.zip
@@ -393,6 +412,9 @@ jobs:
                 .container { max-width: 650px; margin: 0 auto; padding: 20px; }
                 .header { background: linear-gradient(135deg, #24292e 0%, #2b3137 100%); color: white; padding: 20px; border-radius: 10px 10px 0 0; }
                 .content { background: #f8f9fa; padding: 20px; border-radius: 0 0 10px 10px; }
+                .status { font-size: 24px; font-weight: bold; margin: 15px 0; }
+                .status-success { color: #28a745; }
+                .status-failure { color: #dc3545; }
                 .info-row { display: flex; padding: 10px; border-bottom: 1px solid #dee2e6; }
                 .info-label { font-weight: bold; width: 150px; color: #495057; }
                 .info-value { flex: 1; color: #212529; }
@@ -409,18 +431,41 @@ jobs:
                 .footer { margin-top: 20px; font-size: 12px; color: #6c757d; text-align: center; border-top: 1px solid #dee2e6; padding-top: 15px; }
                 .attachment-note { background: #fff3cd; border-left: 4px solid #ffc107; padding: 10px; margin: 15px 0; border-radius: 4px; }
                 .ip-box { background: #f0f0f0; border-radius: 4px; padding: 8px 12px; margin: 5px 0; font-family: monospace; font-size: 12px; line-height: 1.8; }
+                .stats-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin: 15px 0; }
+                .stats-card { background: white; border-radius: 6px; padding: 12px; text-align: center; border: 1px solid #dee2e6; }
+                .stats-number { font-size: 28px; font-weight: bold; color: #0366d6; }
+                .stats-label { font-size: 12px; color: #666; margin-top: 4px; }
               </style>
             </head>
             <body>
               <div class="container">
                 <div class="header">
-                  <h1>股票数据发布报告（20路并行）</h1>
+                  <h1>📦 股票数据发布报告（20路并行）</h1>
                   <p>版本: ${{ env.VERSION }} | 报告时间: ${{ env.BEIJING_TIME }}</p>
                 </div>
                 
                 <div class="content">
+                  <div class="status ${{ env.OVERALL_STATUS == 'success' && 'status-success' || 'status-failure' }}">
+                    ${{ env.OVERALL_STATUS == 'success' && '✅ 数据采集成功' || '⚠️ 数据采集完成（部分失败）' }}
+                  </div>
+
+                  <div class="stats-grid">
+                    <div class="stats-card">
+                      <div class="stats-number">${{ env.TOTAL_SUCCESS }}</div>
+                      <div class="stats-label">✅ 成功</div>
+                    </div>
+                    <div class="stats-card">
+                      <div class="stats-number">${{ env.TOTAL_FAIL }}</div>
+                      <div class="stats-label">❌ 失败</div>
+                    </div>
+                    <div class="stats-card">
+                      <div class="stats-number">${{ env.WORKER_COUNT }}/20</div>
+                      <div class="stats-label">🖥️ 活跃节点</div>
+                    </div>
+                  </div>
+                  
                   <div class="release-box">
-                    <h3>GitHub Release 信息</h3>
+                    <h3>📦 GitHub Release 信息</h3>
                     <div class="info-row">
                       <span class="info-label">版本标签:</span>
                       <span class="info-value"><code>${{ env.VERSION }}</code></span>
@@ -428,10 +473,6 @@ jobs:
                     <div class="info-row">
                       <span class="info-label">发布名称:</span>
                       <span class="info-value">${{ env.RELEASE_NAME }}</span>
-                    </div>
-                    <div class="info-row">
-                      <span class="info-label">下载模式:</span>
-                      <span class="info-value">20路并行 (${{ env.WORKER_COUNT }}/20 Worker)</span>
                     </div>
                     <div class="info-row">
                       <span class="info-label">数据文件数:</span>
@@ -453,33 +494,38 @@ jobs:
                     
                     <div style="text-align: center;">
                       <a href="${{ env.RELEASE_URL }}" class="button" style="color: white !important;">
-                        访问 Release 页面
+                        🔗 访问 Release 页面
                       </a>
                     </div>
                   </div>
                   
                   <div class="info-row">
-                    <span class="info-label">工作流:</span>
+                    <span class="info-label">📋 工作流:</span>
                     <span class="info-value">${{ github.workflow }} #${{ github.run_number }}</span>
                   </div>
                   
                   <div class="info-row">
-                    <span class="info-label">执行时间:</span>
+                    <span class="info-label">📁 仓库:</span>
+                    <span class="info-value">${{ github.repository }} (${{ github.ref_name }} 分支)</span>
+                  </div>
+                  
+                  <div class="info-row">
+                    <span class="info-label">🔔 触发方式:</span>
+                    <span class="info-value">${{ github.event_name }}</span>
+                  </div>
+                  
+                  <div class="info-row">
+                    <span class="info-label">⏰ 执行时间:</span>
                     <span class="info-value">${{ env.BEIJING_TIME }} (北京时间)</span>
                   </div>
                   
                   <div class="info-row">
-                    <span class="info-label">运行时长:</span>
+                    <span class="info-label">⏱️ 运行时长:</span>
                     <span class="info-value">${{ env.DURATION }}</span>
                   </div>
                   
                   <div class="info-row">
-                    <span class="info-label">成功/失败:</span>
-                    <span class="info-value">${{ env.TOTAL_SUCCESS }} / ${{ env.TOTAL_FAIL }} (总计 ${{ env.TOTAL }})</span>
-                  </div>
-                  
-                  <div class="info-row">
-                    <span class="info-label">节点IP:</span>
+                    <span class="info-label">🌐 节点IP:</span>
                     <span class="info-value">
                       <div class="ip-box">${{ env.WORKER_IP_HTML }}</div>
                     </span>
@@ -487,28 +533,28 @@ jobs:
                   
                   <div style="text-align: center; margin-top: 20px;">
                     <a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" class="button button-secondary" style="color: white !important;">
-                      查看工作流日志
+                      🔍 查看工作流日志
                     </a>
                   </div>
                   
                   <p style="margin-top: 15px; word-break: break-all; font-size: 12px;">
-                    <strong>Release 直链:</strong><br>
+                    📎 <strong>Release 直链:</strong><br>
                     <a href="${{ env.RELEASE_URL }}" style="color: #0366d6;">${{ env.RELEASE_URL }}</a>
                   </p>
                   
                   <div class="attachment-note">
-                    <strong>邮件附件说明:</strong><br>
+                    <strong>📎 邮件附件说明:</strong><br>
                     本邮件包含工作流日志附件 (workflow_logs_${{ env.VERSION }}.zip, 大小: ${{ env.LOG_SIZE }})<br>
                     日志中包含20个Worker节点的详细统计信息和IP地址。<br>
                     完整数据文件请访问上方的 Release 页面下载。
                   </div>
                   
                   <div class="footer">
-                    <p>此邮件由 GitHub Actions 自动发送</p>
-                    <p>仓库: ${{ github.repository }} | 运行 ID: ${{ github.run_id }}</p>
-                    <p>${{ env.BEIJING_TIME }}</p>
-                    <p>20路并行下载</p>
-                    <p>数据仅存储在 Release 中，不占用仓库 LFS 配额</p>
+                    <p>🤖 此邮件由 GitHub Actions 自动发送</p>
+                    <p>📁 仓库: ${{ github.repository }} | 运行 ID: ${{ github.run_id }}</p>
+                    <p>🕐 ${{ env.BEIJING_TIME }}</p>
+                    <p>⚡ 20路并行下载模式</p>
+                    <p>💡 数据仅存储在 Release 中，不占用仓库 LFS 配额</p>
                   </div>
                 </div>
               </div>
