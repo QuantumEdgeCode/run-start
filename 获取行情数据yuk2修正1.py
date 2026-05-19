@@ -30,7 +30,7 @@ def get_stock_data(ticker, period, interval):
             print(error_message)
             
             if attempt < max_attempts - 1:  # 如果不是最后一次尝试
-                time.sleep(2)  # 等待2秒后重试
+                time.sleep(0.5)  # 等待0.5秒后重试
     return None
 
 def setup_logging(log_dir, market):
