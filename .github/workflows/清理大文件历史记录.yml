@@ -1,26 +1,21 @@
 # ============================================================
-# 工作流名称：清理大文件历史记录
-# 功能：分析并清理已从当前代码中删除但仍占用Git历史的大文件（>1MB）
-# 触发方式：手动触发（workflow_dispatch）
-# 安全说明：所有敏感信息通过 GitHub Secrets 管理，日志中不打印任何机密信息
+# 工作流名称：分批清理大文件历史记录
+# 功能：分批处理大仓库，避免超时
 # ============================================================
-name: 清理大文件历史记录
+name: 分批清理大文件历史记录
 
-# ============================================================
-# 触发条件配置
-# ============================================================
 on:
   workflow_dispatch:
     inputs:
       size_threshold:
-        description: '文件大小阈值（单位：MB），只清理大于此值的文件'
+        description: '文件大小阈值（单位：MB）'
         required: false
-        default: '1'
+        default: '10'
         type: string
-      file_pattern:
-        description: '文件匹配模式（如 *.* 匹配所有文件，*.zip 只匹配zip文件）'
+      batch_size:
+        description: '每批处理的文件数量（大仓库建议500-1000）'
         required: false
-        default: '*.*'
+        default: '500'
         type: string
       force_push:
         description: '强制推送到远程仓库'
@@ -28,10 +23,6 @@ on:
         default: false
         type: boolean
 
-# ============================================================
-# 环境变量配置（作业级别）
-# 从 GitHub Secrets 读取敏感信息，保护隐私安全
-# ============================================================
 env:
   MAIL_ADDRESS: ${{ secrets.MAIL_ADDRESS }}
   MAIL_PORT: ${{ secrets.MAIL_PORT }}
@@ -40,433 +31,195 @@ env:
   MAIL_TO: ${{ secrets.MAIL_TO }}
 
 jobs:
-  clean-large-files:
-    name: 清理已删除的大文件历史记录
+  # ============================================================
+  # 作业1：分析阶段（快速扫描）
+  # ============================================================
+  analyze:
+    name: 分析大文件
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    
+    outputs:
+      has_files: ${{ steps.analyze.outputs.HAS_FILES }}
+      delete_count: ${{ steps.analyze.outputs.DELETE_COUNT }}
+      batch_count: ${{ steps.analyze.outputs.BATCH_COUNT }}
     steps:
-      # ============================================================
-      # 步骤1：检出仓库代码（完整历史）
-      # ============================================================
-      - name: 检出仓库（完整历史）
+      - name: 检出仓库
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
       
-      # ============================================================
-      # 步骤2：配置Git用户信息
-      # ============================================================
-      - name: 配置Git用户信息
+      - name: 分析大文件
+        id: analyze
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-      
-      # ============================================================
-      # 步骤3：分析和清理大文件历史记录
-      # ============================================================
-      - name: 分析并清理已删除的大文件历史记录
-        id: clean
-        run: |
-          echo "=========================================="
-          echo "🗑️  分析并清理已删除的大文件历史记录"
-          echo "=========================================="
-          echo ""
-          
-          THRESHOLD="${{ github.event.inputs.size_threshold || '1' }}"
+          THRESHOLD="${{ github.event.inputs.size_threshold || '10' }}"
           THRESHOLD_BYTES=$((THRESHOLD * 1024 * 1024))
-          FILE_PATTERN="${{ github.event.inputs.file_pattern || '*.*' }}"
+          BATCH_SIZE="${{ github.event.inputs.batch_size || '500' }}"
           
-          echo "🔍 文件大小阈值: ${THRESHOLD}MB"
-          echo "📁 文件匹配模式: ${FILE_PATTERN}"
-          echo ""
+          echo "🔍 扫描阈值: ${THRESHOLD}MB"
+          echo "📦 批次大小: ${BATCH_SIZE}个文件/批"
           
-          # 记录清理前仓库大小
-          BEFORE_SIZE=$(git count-objects -vH 2>/dev/null | grep 'size-pack' | awk '{print $NF}' || echo "N/A")
-          echo "BEFORE_SIZE=${BEFORE_SIZE}" >> $GITHUB_OUTPUT
-          
-          # 获取当前代码中的所有文件列表
-          echo "📋 获取当前代码文件列表..."
+          # 获取当前文件列表
           git ls-tree -r HEAD --name-only | sort > /tmp/current-files.txt
-          CURRENT_COUNT=$(wc -l < /tmp/current-files.txt)
-          echo "  当前代码文件总数: ${CURRENT_COUNT}"
-          echo ""
           
-          # 扫描Git历史中所有的大文件
-          echo "🔍 扫描历史中的大文件（>${THRESHOLD}MB）..."
-          
-          # 将文件模式转换为正则表达式
-          # *.* 转换为匹配所有带后缀的文件
-          if [ "$FILE_PATTERN" = "*.*" ]; then
-            PATTERN_REGEX='\.'
-          else
-            PATTERN_REGEX=$(echo "$FILE_PATTERN" | sed 's/\./\\./g' | sed 's/\*/.*/g')
-          fi
-          
+          # 查找历史大文件（只找已删除的）
           git rev-list --objects --all | \
             git cat-file --batch-check='%(objecttype) %(objectsize) %(rest)' | \
-            awk -v threshold="$THRESHOLD_BYTES" -v pattern="$PATTERN_REGEX" '
-              /^blob/ && $2 > threshold && $3 ~ pattern {
-                size_mb = $2 / 1024 / 1024
-                printf "%.2f MB\t%s\n", size_mb, $3
+            awk -v threshold="$THRESHOLD_BYTES" '
+              /^blob/ && $2 > threshold {
+                printf "%s\t%s\n", $2, $3
               }
-            ' | sort -hr > /tmp/all-large-files.txt
+            ' | sort -t$'\t' -k2 -u > /tmp/all-large.txt
           
-          if [ ! -s /tmp/all-large-files.txt ]; then
-            echo "✅ 没有找到大于 ${THRESHOLD}MB 的文件"
-            echo "HAS_FILES=false" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-          
-          # 统计找到的大文件
-          TOTAL_FILES=$(wc -l < /tmp/all-large-files.txt)
-          TOTAL_SIZE=$(awk '{sum += $1} END {printf "%.2f", sum}' /tmp/all-large-files.txt)
-          echo "  找到 ${TOTAL_FILES} 个大文件对象，总大小 ${TOTAL_SIZE} MB"
-          echo ""
-          
-          # 显示文件类型分布
-          echo "📊 大文件类型分布："
-          awk '{print $2}' /tmp/all-large-files.txt | \
-            awk -F. '{if(NF>1) print $NF; else print "无后缀"}' | \
-            sort | uniq -c | sort -rn | head -10 | \
-            awk '{printf "  %5d 个  .%s\n", $1, $2}'
-          echo ""
-          
-          # 筛选出已从当前代码中删除的大文件
-          echo "🎯 筛选已从当前代码中删除的大文件..."
-          > /tmp/files-to-delete.txt
-          > /tmp/files-still-exists.txt
-          
-          while IFS=$'\t' read -r size filepath; do
-            if grep -qxF "$filepath" /tmp/current-files.txt; then
-              echo "$filepath" >> /tmp/files-still-exists.txt
-            else
-              echo "$filepath" >> /tmp/files-to-delete.txt
+          # 筛选已删除的文件
+          > /tmp/to-delete.txt
+          while IFS=$'\t' read -r size path; do
+            if ! grep -qxF "$path" /tmp/current-files.txt; then
+              echo "$path" >> /tmp/to-delete.txt
             fi
-          done < <(awk '{print $1 "\t" $2}' /tmp/all-large-files.txt | sort -u -k2)
+          done < /tmp/all-large.txt
           
-          DELETE_COUNT=$(wc -l < /tmp/files-to-delete.txt 2>/dev/null || echo 0)
-          STILL_EXISTS_COUNT=$(wc -l < /tmp/files-still-exists.txt 2>/dev/null || echo 0)
-          
-          echo ""
-          echo "📊 分析结果："
-          echo "  - 历史中已删除的大文件: ${DELETE_COUNT} 个"
-          echo "  - 仍在当前代码中的大文件: ${STILL_EXISTS_COUNT} 个"
-          echo ""
+          DELETE_COUNT=$(wc -l < /tmp/to-delete.txt)
           
           if [ "$DELETE_COUNT" -eq 0 ]; then
-            echo "✅ 没有需要清理的已删除大文件"
             echo "HAS_FILES=false" >> $GITHUB_OUTPUT
             exit 0
           fi
           
-          # 显示将要清理的文件
-          echo "将要清理的已删除大文件（前50个）：" > /tmp/clean-summary.txt
-          COUNT=0
-          while IFS=$'\t' read -r size filepath; do
-            if grep -qxF "$filepath" /tmp/files-to-delete.txt; then
-              COUNT=$((COUNT + 1))
-              if [ $COUNT -le 50 ]; then
-                printf "  ❌ %s MB  %s\n" "$size" "$filepath"
-              fi
-              printf "  ❌ %s MB  %s\n" "$size" "$filepath" >> /tmp/clean-summary.txt
-            fi
-          done < <(awk '{print $1 "\t" $2}' /tmp/all-large-files.txt | sort -u -k2)
-          
-          if [ $DELETE_COUNT -gt 50 ]; then
-            echo "  ... 还有 $((DELETE_COUNT - 50)) 个文件（完整列表见邮件）"
-          fi
-          echo ""
-          
-          # 计算可释放空间
-          DELETE_SIZE=$(while IFS=$'\t' read -r size filepath; do
-            if grep -qxF "$filepath" /tmp/files-to-delete.txt; then
-              echo "$size"
-            fi
-          done < <(awk '{print $1 "\t" $2}' /tmp/all-large-files.txt | sort -u -k2) | awk '{sum += $1} END {printf "%.2f", sum}')
-          
-          echo "💾 预计释放空间: ${DELETE_SIZE} MB"
-          echo ""
-          
-          # 执行历史清理
-          echo "🛠️  开始清理历史记录..."
-          sudo apt-get update -qq && sudo apt-get install -y -qq git-filter-repo
-          
-          git filter-repo \
-            --invert-paths \
-            --paths-from-file /tmp/files-to-delete.txt \
-            --force
-          
-          echo "✅ 历史清理完成"
+          # 分批
+          split -l "$BATCH_SIZE" /tmp/to-delete.txt /tmp/batch_
+          BATCH_COUNT=$(ls /tmp/batch_* | wc -l)
           
           echo "HAS_FILES=true" >> $GITHUB_OUTPUT
           echo "DELETE_COUNT=${DELETE_COUNT}" >> $GITHUB_OUTPUT
-          echo "DELETE_SIZE=${DELETE_SIZE}" >> $GITHUB_OUTPUT
-          echo "STILL_EXISTS=${STILL_EXISTS_COUNT}" >> $GITHUB_OUTPUT
-          echo "TOTAL_FILES=${TOTAL_FILES}" >> $GITHUB_OUTPUT
-          echo "TOTAL_SIZE=${TOTAL_SIZE}" >> $GITHUB_OUTPUT
-      
-      # ============================================================
-      # 步骤4：清理垃圾文件和优化仓库
-      # ============================================================
-      - name: 清理垃圾文件和优化仓库
-        if: steps.clean.outputs.HAS_FILES == 'true'
-        run: |
-          echo ""
-          echo "=========================================="
-          echo "🧹 清理垃圾文件和优化仓库"
-          echo "=========================================="
-          echo ""
+          echo "BATCH_COUNT=${BATCH_COUNT}" >> $GITHUB_OUTPUT
           
+          echo "📊 需清理: ${DELETE_COUNT} 个文件，分 ${BATCH_COUNT} 批处理"
+          
+          # 上传批次文件
+          mkdir -p /tmp/batches
+          cp /tmp/batch_* /tmp/batches/
+          cp /tmp/to-delete.txt /tmp/batches/
+      
+      - name: 上传批次文件
+        uses: actions/upload-artifact@v4
+        with:
+          name: file-batches
+          path: /tmp/batches
+          retention-days: 1
+
+  # ============================================================
+  # 作业2：分批清理（使用矩阵策略）
+  # ============================================================
+  clean-batch:
+    name: 清理批次
+    needs: analyze
+    if: needs.analyze.outputs.has_files == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60  # 每批最多60分钟
+    strategy:
+      fail-fast: false
+      matrix:
+        batch: [1, 2, 3, 4, 5]  # 最多5批并行（可根据需要调整）
+    
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: 下载批次文件
+        uses: actions/download-artifact@v4
+        with:
+          name: file-batches
+          path: /tmp/batches
+      
+      - name: 执行清理
+        id: clean
+        run: |
+          BATCH_FILE="/tmp/batches/batch_$(printf '%02d' ${{ matrix.batch }})"
+          
+          # 检查批次文件是否存在
+          if [ ! -f "$BATCH_FILE" ]; then
+            echo "✅ 批次 ${{ matrix.batch }} 不存在，跳过"
+            echo "SKIP=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          BATCH_COUNT=$(wc -l < "$BATCH_FILE")
+          echo "🔧 处理批次 ${{ matrix.batch }}: ${BATCH_COUNT} 个文件"
+          
+          # 安装工具
+          sudo apt-get update -qq && sudo apt-get install -y -qq git-filter-repo
+          
+          # 执行清理
+          git filter-repo \
+            --invert-paths \
+            --paths-from-file "$BATCH_FILE" \
+            --force
+          
+          echo "✅ 批次 ${{ matrix.batch }} 完成"
+          echo "SKIP=false" >> $GITHUB_OUTPUT
+      
+      - name: 优化仓库
+        if: steps.clean.outputs.SKIP != 'true'
+        run: |
           rm -rf .git/objects/pack/tmp_pack_*
           git gc --aggressive --prune=now
+          git repack -a -d -f --depth=50 --window=50
+      
+      - name: 推送批次
+        if: steps.clean.outputs.SKIP != 'true' && github.event.inputs.force_push == 'true'
+        run: |
+          git remote add origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+          git config http.postBuffer 524288000
+          
+          # 只推送主分支
+          git push origin --force main || echo "推送失败，将在最终步骤统一处理"
+
+  # ============================================================
+  # 作业3：最终优化和推送
+  # ============================================================
+  finalize:
+    name: 最终优化
+    needs: [analyze, clean-batch]
+    if: always() && needs.analyze.outputs.has_files == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: 最终优化
+        run: |
+          echo "🧹 执行最终优化..."
+          
+          # 清理所有垃圾
+          rm -rf .git/objects/pack/tmp_pack_*
+          git reflog expire --expire=now --all
+          git gc --aggressive --prune=now
           git repack -a -d -f --depth=250 --window=250
-          git gc --prune=now
           git prune
           
-          AFTER_SIZE=$(git count-objects -vH 2>/dev/null | grep 'size-pack' | awk '{print $NF}' || echo "N/A")
-          echo "AFTER_SIZE=${AFTER_SIZE}" >> $GITHUB_OUTPUT
-          
-          echo "📊 优化后仓库大小："
+          # 显示最终大小
+          echo "📊 最终仓库大小："
           git count-objects -vH
       
-      # ============================================================
-      # 步骤5：验证清理结果
-      # ============================================================
-      - name: 验证清理结果
-        if: steps.clean.outputs.HAS_FILES == 'true'
+      - name: 最终推送
+        if: github.event.inputs.force_push == 'true'
         run: |
-          echo ""
-          echo "=========================================="
-          echo "📊 清理后验证"
-          echo "=========================================="
-          echo ""
-          
-          echo "📦 清理后仓库大小："
-          git count-objects -vH
-          echo ""
-          
-          echo "🔍 验证清理结果..."
-          REMAINING=0
-          while IFS= read -r filepath; do
-            if git log --all --oneline -- "$filepath" 2>/dev/null | head -1 | grep -q .; then
-              REMAINING=$((REMAINING + 1))
-            fi
-          done < /tmp/files-to-delete.txt
-          
-          if [ "$REMAINING" -eq 0 ]; then
-            echo "✅ 所有已删除的大文件历史已清理完毕"
-          else
-            echo "⚠️  仍有 ${REMAINING} 个文件未完全清理"
-          fi
-          
-          echo "✅ 当前代码中的文件未受影响"
-      
-      # ============================================================
-      # 步骤6：推送清理后的仓库
-      # ============================================================
-      - name: 推送清理后的仓库
-        id: push
-        if: steps.clean.outputs.HAS_FILES == 'true' && github.event.inputs.force_push == 'true'
-        run: |
-          echo ""
-          echo "=========================================="
-          echo "🚀 推送清理后的历史到远程仓库"
-          echo "=========================================="
-          echo ""
-          
           git remote add origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+          git config http.postBuffer 1073741824  # 1GB
           
-          git config http.postBuffer 524288000
-          git config http.lowSpeedLimit 0
-          git config http.lowSpeedTime 999999
+          # 推送主分支
+          git push origin --force main
           
-          MAX_RETRIES=3
-          RETRY_COUNT=0
-          PUSH_SUCCESS=false
-          
-          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-            echo "推送尝试 $((RETRY_COUNT + 1))/$MAX_RETRIES ..."
-            
-            if git push origin --force --all && git push origin --force --tags; then
-              echo "✅ 推送成功"
-              PUSH_SUCCESS=true
-              break
-            fi
-            
-            RETRY_COUNT=$((RETRY_COUNT + 1))
-            
-            if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
-              echo "⚠️  推送失败，等待30秒后重试..."
-              sleep 30
-              git gc --aggressive --prune=now
-              git repack -a -d -f --depth=250 --window=250
-            fi
-          done
-          
-          echo "PUSH_SUCCESS=${PUSH_SUCCESS}" >> $GITHUB_OUTPUT
-          
-          if [ "$PUSH_SUCCESS" = "true" ]; then
-            echo "✅ 已成功推送到远程仓库"
-            echo "⚠️  所有协作者需要重新克隆仓库"
-          else
-            echo "❌ 推送失败，请查看邮件了解详情"
-            exit 1
-          fi
+          # 推送其他分支和标签
+          git push origin --force --all
+          git push origin --force --tags
       
-      # ============================================================
-      # 步骤7：生成HTML邮件内容
-      # ============================================================
-      - name: 生成邮件内容
-        if: always()
-        run: |
-          python3 << 'PYTHON_SCRIPT'
-          import os
-          from datetime import datetime
-          
-          def read_file(filepath):
-              try:
-                  with open(filepath, 'r', encoding='utf-8') as f:
-                      return f.read().strip()
-              except:
-                  return ""
-          
-          repo_name = os.environ.get('GITHUB_REPOSITORY', 'Unknown')
-          generation_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-          threshold = os.environ.get('THRESHOLD', '1')
-          file_pattern = os.environ.get('FILE_PATTERN', '*.*')
-          force_push = os.environ.get('FORCE_PUSH', 'false')
-          
-          has_files = os.environ.get('HAS_FILES', 'false')
-          delete_count = os.environ.get('DELETE_COUNT', '0')
-          delete_size = os.environ.get('DELETE_SIZE', '0')
-          still_exists = os.environ.get('STILL_EXISTS', '0')
-          before_size = os.environ.get('BEFORE_SIZE', 'N/A')
-          after_size = os.environ.get('AFTER_SIZE', 'N/A')
-          push_success = os.environ.get('PUSH_SUCCESS', 'false')
-          
-          clean_summary = read_file('/tmp/clean-summary.txt')
-          all_files = read_file('/tmp/all-large-files.txt')
-          
-          # 确定状态
-          if has_files != 'true':
-              status = "无需清理"
-              status_emoji = "✅"
-              status_color = "#28a745"
-          elif force_push == 'true' and push_success == 'true':
-              status = "清理并推送成功"
-              status_emoji = "🎉"
-              status_color = "#28a745"
-          elif force_push == 'true' and push_success != 'true':
-              status = "清理成功，推送失败"
-              status_emoji = "⚠️"
-              status_color = "#ffc107"
-          else:
-              status = "清理完成，未推送"
-              status_emoji = "💡"
-              status_color = "#17a2b8"
-          
-          html_content = f'''<!DOCTYPE html>
-          <html>
-          <head>
-          <meta charset="UTF-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1.0">
-          <style>
-          body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #333; max-width: 800px; margin: 0 auto; padding: 20px; background-color: #f5f5f5; }}
-          .header {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; border-radius: 10px; margin-bottom: 30px; text-align: center; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }}
-          .header h1 {{ margin: 0; font-size: 28px; }}
-          .header p {{ margin: 10px 0 0; opacity: 0.9; }}
-          .status-card {{ background: {status_color}; color: white; border-radius: 10px; padding: 20px; margin-bottom: 30px; text-align: center; font-size: 20px; font-weight: bold; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
-          .info-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 30px; }}
-          .info-card {{ background: white; border-radius: 8px; padding: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
-          .info-label {{ font-size: 12px; color: #666; text-transform: uppercase; margin-bottom: 5px; font-weight: 600; }}
-          .info-value {{ font-size: 24px; font-weight: bold; color: #333; }}
-          .section {{ background: white; border-radius: 8px; padding: 25px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
-          .section h2 {{ color: #24292e; margin-top: 0; padding-bottom: 10px; border-bottom: 2px solid #e1e4e8; }}
-          .section pre {{ background: #f6f8fa; border: 1px solid #e1e4e8; border-radius: 6px; padding: 16px; overflow-x: auto; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-wrap: break-word; font-family: 'Courier New', monospace; }}
-          .warning {{ background: #fff3cd; border: 1px solid #ffc107; border-radius: 8px; padding: 15px; margin-bottom: 20px; color: #856404; }}
-          .footer {{ text-align: center; color: #666; font-size: 12px; margin-top: 30px; padding-top: 20px; border-top: 1px solid #e1e4e8; }}
-          </style>
-          </head>
-          <body>
-          <div class="header">
-          <h1>🗑️ 大文件历史清理报告</h1>
-          <p>{repo_name} · {generation_time}</p>
-          </div>
-          
-          <div class="status-card">
-          {status_emoji} {status}
-          </div>
-          
-          <div class="info-grid">
-          <div class="info-card"><div class="info-label">清理前大小</div><div class="info-value">{before_size}</div></div>
-          <div class="info-card"><div class="info-label">清理后大小</div><div class="info-value">{after_size}</div></div>
-          <div class="info-card"><div class="info-label">已清理文件</div><div class="info-value">{delete_count} 个</div></div>
-          <div class="info-card"><div class="info-label">释放空间</div><div class="info-value">{delete_size} MB</div></div>
-          <div class="info-card"><div class="info-label">保留文件</div><div class="info-value">{still_exists} 个</div></div>
-          <div class="info-card"><div class="info-label">大小阈值</div><div class="info-value">{threshold} MB</div></div>
-          </div>
-          
-          <div class="section">
-          <h2>📋 清理详情（已删除的大文件）</h2>
-          <pre>{clean_summary if clean_summary else '无需清理的文件'}</pre>
-          </div>
-          
-          <div class="section">
-          <h2>📊 所有历史大文件（>={threshold}MB）</h2>
-          <pre>{all_files if all_files else '无大文件'}</pre>
-          </div>'''
-          
-          # 根据推送状态添加警告
-          if force_push == 'true' and push_success == 'true':
-              html_content += '''
-          <div class="warning">
-          <strong>⚠️ 重要通知：</strong>历史已被重写并推送到远程仓库。所有协作者必须重新克隆仓库。
-          </div>'''
-          elif force_push == 'true' and push_success != 'true':
-              html_content += '''
-          <div class="warning">
-          <strong>⚠️ 推送失败：</strong>请在本地手动推送，或联系管理员处理。
-          </div>'''
-          elif has_files == 'true':
-              html_content += '''
-          <div class="warning">
-          <strong>💡 提示：</strong>清理已完成但未推送。确认无误后重新运行工作流并设置 <code>force_push=true</code>
-          </div>'''
-          
-          html_content += f'''
-          <div class="footer">
-          <p>本报告由 GitHub Actions 自动生成</p>
-          <p>生成时间：{generation_time}</p>
-          <p>仓库：{repo_name} | 匹配模式：{file_pattern}</p>
-          </div>
-          </body>
-          </html>'''
-          
-          with open('/tmp/email-content.html', 'w', encoding='utf-8') as f:
-              f.write(html_content)
-          
-          print("✅ HTML邮件内容生成成功")
-          PYTHON_SCRIPT
-        env:
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          THRESHOLD: ${{ github.event.inputs.size_threshold || '1' }}
-          FILE_PATTERN: ${{ github.event.inputs.file_pattern || '*.*' }}
-          FORCE_PUSH: ${{ github.event.inputs.force_push || 'false' }}
-          HAS_FILES: ${{ steps.clean.outputs.HAS_FILES || 'false' }}
-          DELETE_COUNT: ${{ steps.clean.outputs.DELETE_COUNT || '0' }}
-          DELETE_SIZE: ${{ steps.clean.outputs.DELETE_SIZE || '0' }}
-          STILL_EXISTS: ${{ steps.clean.outputs.STILL_EXISTS || '0' }}
-          BEFORE_SIZE: ${{ steps.clean.outputs.BEFORE_SIZE || 'N/A' }}
-          AFTER_SIZE: ${{ steps.clean.outputs.AFTER_SIZE || 'N/A' }}
-          PUSH_SUCCESS: ${{ steps.push.outputs.PUSH_SUCCESS || 'false' }}
-      
-      # ============================================================
-      # 步骤8：发送邮件通知
-      # ============================================================
-      - name: 发送邮件通知
+      - name: 发送完成报告
         if: always()
         uses: dawidd6/action-send-mail@v3
         with:
@@ -474,48 +227,16 @@ jobs:
           server_port: ${{ secrets.MAIL_PORT }}
           username: ${{ secrets.MAIL_USERNAME }}
           password: ${{ secrets.MAIL_PASSWORD }}
-          subject: "🗑️ 大文件清理报告 - ${{ github.repository }} - ${{ steps.clean.outputs.DELETE_COUNT || 0 }}个文件已清理"
+          subject: "✅ 大文件清理完成 - ${{ github.repository }}"
           to: ${{ secrets.MAIL_TO }}
           from: ${{ secrets.MAIL_USERNAME }}
-          html_body: file:///tmp/email-content.html
-          priority: normal
-      
-      # ============================================================
-      # 步骤9：显示最终摘要
-      # 安全注意：不打印任何敏感信息
-      # ============================================================
-      - name: 显示最终摘要
-        if: always()
-        run: |
-          echo ""
-          echo "=========================================="
-          echo "✅ 清理工作流执行完成"
-          echo "=========================================="
-          echo ""
-          
-          if [ "${{ steps.clean.outputs.HAS_FILES }}" = "true" ]; then
-            echo "🗑️  清理结果："
-            echo "   - 已清理文件数: ${{ steps.clean.outputs.DELETE_COUNT }} 个"
-            echo "   - 释放空间: ${{ steps.clean.outputs.DELETE_SIZE }} MB"
-            echo "   - 保留文件数: ${{ steps.clean.outputs.STILL_EXISTS }} 个（仍在代码中）"
-            echo ""
+          body: |
+            仓库 ${{ github.repository }} 的大文件清理已完成。
             
-            if [ "${{ github.event.inputs.force_push }}" = "true" ]; then
-              if [ "${{ steps.push.outputs.PUSH_SUCCESS }}" = "true" ]; then
-                echo "🚀 推送状态: 成功"
-                echo "⚠️  请通知所有协作者重新克隆仓库"
-              else
-                echo "❌ 推送状态: 失败"
-                echo "📧 请查看邮件了解详情"
-              fi
-            else
-              echo "💡 清理已完成但未推送"
-              echo "   确认无误后重新运行并设置 force_push=true"
-            fi
-          else
-            echo "ℹ️  无需清理的文件"
-          fi
-          
-          echo ""
-          echo "📧 详细报告已通过邮件发送"
-          echo "🔒 敏感信息已自动隐藏"
+            清理统计：
+            - 总文件数: ${{ needs.analyze.outputs.delete_count }}
+            - 分批数: ${{ needs.analyze.outputs.batch_count }}
+            - 推送状态: ${{ github.event.inputs.force_push == 'true' && '已推送' || '未推送' }}
+            
+            请所有协作者重新克隆仓库。
+          priority: normal
