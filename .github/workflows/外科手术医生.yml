@@ -1,0 +1,139 @@
+# ============================================================
+# 工作流名称：删除data目录历史记录
+# 功能：删除指定目录的所有Git历史记录
+# ============================================================
+name: 删除data目录历史记录
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_path:
+        description: '要删除的目录路径'
+        required: false
+        default: 'data'
+        type: string
+      force_push:
+        description: '强制推送到远程仓库'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  MAIL_ADDRESS: ${{ secrets.MAIL_ADDRESS }}
+  MAIL_PORT: ${{ secrets.MAIL_PORT }}
+  MAIL_USERNAME: ${{ secrets.MAIL_USERNAME }}
+  MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
+  MAIL_TO: ${{ secrets.MAIL_TO }}
+
+jobs:
+  delete-data-history:
+    name: 删除data目录历史记录
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    permissions:
+      contents: write
+    
+    steps:
+      - name: 检出仓库（完整历史）
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 配置Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: 记录清理前状态
+        id: before
+        run: |
+          TARGET="${{ github.event.inputs.target_path || 'data' }}"
+          echo "目标: ${TARGET}"
+          echo "开始: $(date '+%H:%M:%S')"
+          
+          du -sh .git
+          BEFORE_SIZE=$(du -sh .git | cut -f1)
+          echo "BEFORE_SIZE=${BEFORE_SIZE}" >> $GITHUB_OUTPUT
+          
+          # 统计历史记录数
+          COUNT=$(git log --all --pretty=format: --name-only -- "${TARGET}" 2>/dev/null | sort -u | wc -l)
+          echo "历史记录: ${COUNT}"
+          echo "HISTORY_COUNT=${COUNT}" >> $GITHUB_OUTPUT
+
+      - name: 删除目录历史
+        run: |
+          TARGET="${{ github.event.inputs.target_path || 'data' }}"
+          
+          # 下载BFG
+          wget -q https://repo1.maven.org/maven2/com/madgag/bfg/1.14.0/bfg-1.14.0.jar -O /tmp/bfg.jar
+          
+          # 如果目录存在，先删除
+          if [ -d "${TARGET}" ]; then
+            git rm -r "${TARGET}" 2>/dev/null || rm -rf "${TARGET}"
+            git add -A
+            git commit -m "清理" || true
+          fi
+          
+          # BFG删除
+          java -jar /tmp/bfg.jar --delete-folders "${TARGET}" --no-blob-protection . 2>&1 | grep -E "Deleted|Cleaned|Files" || true
+          
+          # 清理
+          git reflog expire --expire=now --all
+          git gc --prune=now --aggressive 2>&1 | tail -3
+          git repack -a -d -f --depth=250 --window=250 2>&1 | tail -3
+          
+          echo ""
+          du -sh .git
+          AFTER_SIZE=$(du -sh .git | cut -f1)
+          echo "AFTER_SIZE=${AFTER_SIZE}" >> $GITHUB_OUTPUT
+          
+          # 验证
+          REMAINING=$(git log --all --pretty=format: --name-only -- "${TARGET}" 2>/dev/null | sort -u | wc -l)
+          echo "剩余: ${REMAINING}"
+          echo "REMAINING=${REMAINING}" >> $GITHUB_OUTPUT
+
+      - name: 推送
+        if: github.event.inputs.force_push == 'true'
+        run: |
+          git remote add origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+          git config http.postBuffer 1073741824
+          
+          DEFAULT_BRANCH=$(git remote show origin 2>/dev/null | grep 'HEAD branch' | awk '{print $NF}' || echo "main")
+          
+          git push origin --force "$DEFAULT_BRANCH" 2>&1 | tail -3
+          git push origin --force --tags 2>&1 | tail -3
+          
+          echo "PUSH_SUCCESS=true" >> $GITHUB_OUTPUT
+
+      - name: 发送邮件
+        if: always()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.MAIL_ADDRESS }}
+          server_port: ${{ secrets.MAIL_PORT }}
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          subject: "清理完成 - ${{ github.repository }}"
+          to: ${{ secrets.MAIL_TO }}
+          from: ${{ secrets.MAIL_USERNAME }}
+          body: |
+            仓库: ${{ github.repository }}
+            目标: ${{ github.event.inputs.target_path || 'data' }}/
+            时间: $(date '+%Y-%m-%d %H:%M:%S')
+            
+            清理前: ${{ steps.before.outputs.BEFORE_SIZE }}
+            清理后: ${{ steps.before.outputs.AFTER_SIZE || 'N/A' }}
+            历史记录: ${{ steps.before.outputs.HISTORY_COUNT }} → ${{ steps.before.outputs.REMAINING || 'N/A' }}
+            推送: ${{ steps.before.outputs.PUSH_SUCCESS == 'true' && '已推送' || github.event.inputs.force_push == 'true' && '失败' || '未推送' }}
+          priority: normal
+
+      - name: 完成
+        run: |
+          echo ""
+          echo "=========================================="
+          echo "完成 $(date '+%H:%M:%S')"
+          echo "清理前: ${{ steps.before.outputs.BEFORE_SIZE }}"
+          echo "清理后: ${{ steps.before.outputs.AFTER_SIZE || 'N/A' }}"
+          echo "推送: ${{ github.event.inputs.force_push == 'true' && '是' || '否' }}"
+          echo "=========================================="
