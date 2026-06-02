@@ -1,0 +1,485 @@
+# ============================================================
+# 工作流名称：仓库文件历史概览分析
+# 功能：多线程分析仓库历史文件，统计大小分布、文件类型、已删除文件
+# 输出：邮件发送详细报告
+# ============================================================
+name: 仓库文件历史概览分析
+
+on:
+  workflow_dispatch:
+
+env:
+  MAIL_ADDRESS: ${{ secrets.MAIL_ADDRESS }}
+  MAIL_PORT: ${{ secrets.MAIL_PORT }}
+  MAIL_USERNAME: ${{ secrets.MAIL_USERNAME }}
+  MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
+  MAIL_TO: ${{ secrets.MAIL_TO }}
+
+jobs:
+  analyze-history:
+    name: 多线程分析仓库历史
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    permissions:
+      contents: read
+    
+    steps:
+      # ============================================================
+      # 步骤1：检出仓库
+      # ============================================================
+      - name: 检出仓库（完整历史）
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ============================================================
+      # 步骤2：多线程分析（使用Python并行处理）
+      # ============================================================
+      - name: 多线程分析仓库历史
+        run: |
+          python3 << 'PYTHON_SCRIPT'
+          import subprocess
+          import os
+          import hashlib
+          from collections import defaultdict, Counter
+          from concurrent.futures import ProcessPoolExecutor, as_completed
+          from datetime import datetime
+          import sys
+
+          start_time = datetime.now()
+          print(f"⏰ 开始时间: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+          print("=" * 60)
+
+          # ============================================================
+          # 配置
+          # ============================================================
+          CPU_COUNT = os.cpu_count() or 4
+          WORKERS = min(CPU_COUNT, 16)  # 最多16个并行进程
+          TMP_DIR = "/tmp/repo-analysis"
+          os.makedirs(TMP_DIR, exist_ok=True)
+
+          print(f"🖥️  CPU核心数: {CPU_COUNT}")
+          print(f"🔧 并行进程数: {WORKERS}")
+          print()
+
+          # ============================================================
+          # 步骤1：获取所有Git对象（快速扫描）
+          # ============================================================
+          print("📊 步骤1: 扫描所有Git对象...")
+          step1_start = datetime.now()
+
+          # 获取当前文件列表
+          current_files = set()
+          result = subprocess.run(
+              ["git", "ls-tree", "-r", "HEAD", "--name-only"],
+              capture_output=True, text=True
+          )
+          current_files = set(result.stdout.strip().split('\n')) if result.stdout.strip() else set()
+          print(f"  当前文件数: {len(current_files)}")
+
+          # 获取所有对象信息
+          result = subprocess.run(
+              ["git", "rev-list", "--objects", "--all"],
+              capture_output=True, text=True
+          )
+          all_objects = result.stdout.strip().split('\n')
+          print(f"  Git对象总数: {len(all_objects)}")
+
+          # 批量获取对象信息
+          print("  批量获取对象大小...")
+          process = subprocess.Popen(
+              ["git", "cat-file", "--batch-check=%(objecttype) %(objectsize) %(objectname) %(rest)"],
+              stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+          )
+          stdout, _ = process.communicate(input='\n'.join(all_objects))
+          
+          step1_end = datetime.now()
+          print(f"  ⏱️  步骤1耗时: {(step1_end - step1_start).total_seconds():.1f}秒")
+          print()
+
+          # ============================================================
+          # 步骤2：解析对象信息（多线程）
+          # ============================================================
+          print("📊 步骤2: 解析对象信息...")
+          step2_start = datetime.now()
+
+          lines = stdout.strip().split('\n')
+          blob_lines = []
+          for line in lines:
+              if line.startswith('blob'):
+                  blob_lines.append(line)
+
+          print(f"  Blob对象数: {len(blob_lines)}")
+
+          def parse_blob_batch(batch):
+              """解析一批blob数据"""
+              results = []
+              for line in batch:
+                  parts = line.split(' ', 3)
+                  if len(parts) >= 4:
+                      obj_type, size_str, obj_hash, path = parts
+                      try:
+                          size = int(size_str)
+                          path = path.strip()
+                          if path:
+                              results.append((size, path))
+                      except ValueError:
+                          pass
+              return results
+
+          # 分批处理
+          batch_size = max(1, len(blob_lines) // WORKERS)
+          batches = [blob_lines[i:i + batch_size] for i in range(0, len(blob_lines), batch_size)]
+
+          all_blobs = []
+          with ProcessPoolExecutor(max_workers=WORKERS) as executor:
+              futures = {executor.submit(parse_blob_batch, batch): i for i, batch in enumerate(batches)}
+              for future in as_completed(futures):
+                  all_blobs.extend(future.result())
+
+          print(f"  解析完成: {len(all_blobs)} 个blob")
+
+          step2_end = datetime.now()
+          print(f"  ⏱️  步骤2耗时: {(step2_end - step2_start).total_seconds():.1f}秒")
+          print()
+
+          # ============================================================
+          # 步骤3：统计分析（按大小、类型、已删除）
+          # ============================================================
+          print("📊 步骤3: 统计分析...")
+          step3_start = datetime.now()
+
+          # 去重（同一个路径可能有多版本）
+          path_max_size = {}
+          for size, path in all_blobs:
+              if path not in path_max_size or size > path_max_size[path]:
+                  path_max_size[path] = size
+
+          # 已删除的文件
+          deleted_files = {path: size for path, size in path_max_size.items() if path not in current_files}
+          existing_files = {path: size for path, size in path_max_size.items() if path in current_files}
+
+          # 文件类型统计
+          def get_extension(path):
+              """获取文件扩展名"""
+              if '.' in path:
+                  ext = path.rsplit('.', 1)[-1].lower()
+                  if len(ext) <= 10 and '/' not in ext:
+                      return ext
+              return '其他/无后缀'
+
+          # 统计所有历史文件类型
+          all_ext_counter = Counter()
+          deleted_ext_counter = Counter()
+          existing_ext_counter = Counter()
+
+          for path in path_max_size:
+              ext = get_extension(path)
+              all_ext_counter[ext] += 1
+
+          for path in deleted_files:
+              ext = get_extension(path)
+              deleted_ext_counter[ext] += 1
+
+          for path in existing_files:
+              ext = get_extension(path)
+              existing_ext_counter[ext] += 1
+
+          # 大小分布统计
+          def get_size_category(size_bytes):
+              """获取大小分类（MB）"""
+              size_mb = size_bytes / (1024 * 1024)
+              if size_mb < 0.01:
+                  return 0.01
+              elif size_mb < 0.05:
+                  return 0.05
+              elif size_mb < 0.1:
+                  return 0.1
+              elif size_mb < 0.2:
+                  return 0.2
+              elif size_mb < 0.5:
+                  return 0.5
+              elif size_mb < 1:
+                  return 1
+              elif size_mb < 5:
+                  return 5
+              elif size_mb < 10:
+                  return 10
+              elif size_mb < 50:
+                  return 50
+              elif size_mb < 100:
+                  return 100
+              elif size_mb < 500:
+                  return 500
+              elif size_mb < 1000:
+                  return 1000
+              else:
+                  return round(size_mb / 1000) * 1000
+
+          # 统计所有历史文件大小分布
+          all_size_dist = defaultdict(int)
+          deleted_size_dist = defaultdict(int)
+          existing_size_dist = defaultdict(int)
+
+          all_size_sum = 0
+          deleted_size_sum = 0
+          existing_size_sum = 0
+
+          for size in path_max_size.values():
+              cat = get_size_category(size)
+              all_size_dist[cat] += 1
+              all_size_sum += size
+
+          for size in deleted_files.values():
+              cat = get_size_category(size)
+              deleted_size_dist[cat] += 1
+              deleted_size_sum += size
+
+          for size in existing_files.values():
+              cat = get_size_category(size)
+              existing_size_dist[cat] += 1
+              existing_size_sum += size
+
+          step3_end = datetime.now()
+          print(f"  ⏱️  步骤3耗时: {(step3_end - step3_start).total_seconds():.1f}秒")
+          print()
+
+          # ============================================================
+          # 步骤4：计算文件校验值（当前文件，多线程）
+          # ============================================================
+          print("📊 步骤4: 计算文件校验值（前1000个大文件）...")
+          step4_start = datetime.now()
+
+          # 只对当前存在的大文件计算校验值（前1000个）
+          existing_sorted = sorted(existing_files.items(), key=lambda x: x[1], reverse=True)[:1000]
+          
+          checksums = {}
+          if existing_sorted:
+              batch_size_checksum = max(1, len(existing_sorted) // WORKERS)
+              checksum_batches = [existing_sorted[i:i + batch_size_checksum] for i in range(0, len(existing_sorted), batch_size_checksum)]
+
+              def compute_checksums(batch):
+                  """计算一批文件的校验值"""
+                  results = {}
+                  for path, size in batch:
+                      try:
+                          sha256 = hashlib.sha256()
+                          with open(path, 'rb') as f:
+                              while True:
+                                  chunk = f.read(8192)
+                                  if not chunk:
+                                      break
+                                  sha256.update(chunk)
+                          results[path] = sha256.hexdigest()[:16]  # 只取前16位
+                      except (IOError, OSError):
+                          results[path] = "无法读取"
+                  return results
+
+              with ProcessPoolExecutor(max_workers=WORKERS) as executor:
+                  futures = {executor.submit(compute_checksums, batch): i for i, batch in enumerate(checksum_batches)}
+                  for future in as_completed(futures):
+                      checksums.update(future.result())
+
+          step4_end = datetime.now()
+          print(f"  计算了 {len(checksums)} 个文件的校验值")
+          print(f"  ⏱️  步骤4耗时: {(step4_end - step4_start).total_seconds():.1f}秒")
+          print()
+
+          # ============================================================
+          # 步骤5：生成报告
+          # ============================================================
+          print("📊 步骤5: 生成报告...")
+
+          def format_size(size_bytes):
+              """格式化文件大小"""
+              if size_bytes < 1024:
+                  return f"{size_bytes} B"
+              elif size_bytes < 1024 * 1024:
+                  return f"{size_bytes / 1024:.2f} KB"
+              elif size_bytes < 1024 * 1024 * 1024:
+                  return f"{size_bytes / 1024 / 1024:.2f} MB"
+              else:
+                  return f"{size_bytes / 1024 / 1024 / 1024:.2f} GB"
+
+          def format_size_category(cat_mb):
+              """格式化大小分类"""
+              if cat_mb < 1:
+                  return f"{cat_mb * 1000:.0f}KB"
+              elif cat_mb >= 1000:
+                  return f"{cat_mb / 1000:.0f}GB"
+              else:
+                  return f"{cat_mb:.0f}MB"
+
+          # 排序大小分布
+          size_order = [0.01, 0.05, 0.1, 0.2, 0.5, 1, 5, 10, 50, 100, 500, 1000]
+
+          report_lines = []
+          report_lines.append("=" * 70)
+          report_lines.append("📊 仓库文件历史概览分析报告")
+          report_lines.append("=" * 70)
+          report_lines.append("")
+          report_lines.append(f"仓库名称: {os.environ.get('GITHUB_REPOSITORY', 'Unknown')}")
+          report_lines.append(f"分析时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+          report_lines.append(f"总执行时间: {(datetime.now() - start_time).total_seconds():.1f} 秒")
+          report_lines.append("")
+
+          # 总体统计
+          report_lines.append("-" * 70)
+          report_lines.append("📦 总体统计")
+          report_lines.append("-" * 70)
+          report_lines.append(f"  历史文件总数（去重）: {len(path_max_size):,} 个")
+          report_lines.append(f"  历史文件总大小: {format_size(all_size_sum)}")
+          report_lines.append(f"  当前文件数: {len(current_files):,} 个")
+          report_lines.append(f"  当前文件总大小: {format_size(existing_size_sum)}")
+          report_lines.append(f"  已删除文件数: {len(deleted_files):,} 个")
+          report_lines.append(f"  已删除文件总大小: {format_size(deleted_size_sum)}")
+          report_lines.append("")
+
+          # 大小分布统计（只要有文件就记录）
+          report_lines.append("-" * 70)
+          report_lines.append("📏 历史文件大小分布")
+          report_lines.append("-" * 70)
+          report_lines.append(f"  {'大小范围':<10} {'历史总数':>10} {'已删除':>10} {'仍存在':>10}")
+          report_lines.append(f"  {'-'*10} {'-'*10} {'-'*10} {'-'*10}")
+
+          all_cats = set()
+          for cat in size_order:
+              if cat in all_size_dist or cat in deleted_size_dist or cat in existing_size_dist:
+                  all_cats.add(cat)
+          for cat in sorted(all_size_dist.keys()):
+              if cat not in all_cats:
+                  all_cats.add(cat)
+
+          for cat in sorted(all_cats):
+              all_count = all_size_dist.get(cat, 0)
+              del_count = deleted_size_dist.get(cat, 0)
+              ex_count = existing_size_dist.get(cat, 0)
+              # 只要有历史文件就记录，不过滤
+              if all_count > 0:
+                  cat_label = format_size_category(cat)
+                  report_lines.append(f"  {cat_label:<10} {all_count:>10,} {del_count:>10,} {ex_count:>10,}")
+
+          report_lines.append("")
+
+          # 文件类型统计（前30种）
+          report_lines.append("-" * 70)
+          report_lines.append("📁 文件类型分布（前30种）")
+          report_lines.append("-" * 70)
+          report_lines.append(f"  {'类型':<15} {'历史总数':>10} {'已删除':>10} {'仍存在':>10}")
+          report_lines.append(f"  {'-'*15} {'-'*10} {'-'*10} {'-'*10}")
+
+          for ext, count in all_ext_counter.most_common(30):
+              del_count = deleted_ext_counter.get(ext, 0)
+              ex_count = existing_ext_counter.get(ext, 0)
+              report_lines.append(f"  .{ext:<14} {count:>10,} {del_count:>10,} {ex_count:>10,}")
+
+          report_lines.append("")
+
+          # 已删除文件类型详情
+          report_lines.append("-" * 70)
+          report_lines.append("🗑️  已删除文件类型详情")
+          report_lines.append("-" * 70)
+          report_lines.append(f"  {'类型':<15} {'数量':>10} {'总大小':>15}")
+          report_lines.append(f"  {'-'*15} {'-'*10} {'-'*15}")
+
+          deleted_type_size = defaultdict(int)
+          for path, size in deleted_files.items():
+              ext = get_extension(path)
+              deleted_type_size[ext] += size
+
+          for ext, count in deleted_ext_counter.most_common(30):
+              total_size = deleted_type_size.get(ext, 0)
+              report_lines.append(f"  .{ext:<14} {count:>10,} {format_size(total_size):>15}")
+
+          report_lines.append("")
+
+          # 大文件校验值（前50个）
+          if checksums:
+              report_lines.append("-" * 70)
+              report_lines.append("🔐 当前大文件校验值（前50个，SHA256前16位）")
+              report_lines.append("-" * 70)
+              report_lines.append(f"  {'文件路径':<50} {'大小':>10} {'校验值':>18}")
+              report_lines.append(f"  {'-'*50} {'-'*10} {'-'*18}")
+
+              for i, (path, size) in enumerate(existing_sorted[:50]):
+                  if path in checksums:
+                      cs = checksums[path]
+                      display_path = path if len(path) <= 48 else '...' + path[-45:]
+                      report_lines.append(f"  {display_path:<50} {format_size(size):>10} {cs:>18}")
+
+              report_lines.append("")
+
+          # 执行时间统计
+          report_lines.append("-" * 70)
+          report_lines.append("⏱️  执行时间统计")
+          report_lines.append("-" * 70)
+          report_lines.append(f"  步骤1 (扫描对象): {(step1_end - step1_start).total_seconds():.1f}秒")
+          report_lines.append(f"  步骤2 (解析数据): {(step2_end - step2_start).total_seconds():.1f}秒")
+          report_lines.append(f"  步骤3 (统计分析): {(step3_end - step3_start).total_seconds():.1f}秒")
+          report_lines.append(f"  步骤4 (校验值计算): {(step4_end - step4_start).total_seconds():.1f}秒")
+          report_lines.append(f"  总执行时间: {(datetime.now() - start_time).total_seconds():.1f}秒")
+          report_lines.append("")
+
+          report_lines.append("=" * 70)
+          report_lines.append("报告由 GitHub Actions 自动生成")
+          report_lines.append("=" * 70)
+
+          # 写入文件
+          report_content = '\n'.join(report_lines)
+          with open('/tmp/repo-analysis-report.txt', 'w', encoding='utf-8') as f:
+              f.write(report_content)
+
+          print("✅ 报告生成完成")
+          print()
+
+          # 打印摘要
+          print("=" * 60)
+          print("📊 分析摘要")
+          print("=" * 60)
+          print(f"  历史文件总数: {len(path_max_size):,}")
+          print(f"  历史总大小: {format_size(all_size_sum)}")
+          print(f"  已删除文件: {len(deleted_files):,} ({format_size(deleted_size_sum)})")
+          print(f"  当前文件: {len(current_files):,} ({format_size(existing_size_sum)})")
+          print(f"  总执行时间: {(datetime.now() - start_time).total_seconds():.1f}秒")
+          print(f"  CPU核心: {CPU_COUNT}, 并行进程: {WORKERS}")
+          print()
+
+          PYTHON_SCRIPT
+
+      # ============================================================
+      # 步骤3：发送邮件
+      # ============================================================
+      - name: 发送分析报告
+        if: always()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.MAIL_ADDRESS }}
+          server_port: ${{ secrets.MAIL_PORT }}
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          subject: "📊 仓库文件历史概览 - ${{ github.repository }}"
+          to: ${{ secrets.MAIL_TO }}
+          from: ${{ secrets.MAIL_USERNAME }}
+          body: file:///tmp/repo-analysis-report.txt
+          priority: normal
+
+      # ============================================================
+      # 步骤4：摘要
+      # ============================================================
+      - name: 显示摘要
+        if: always()
+        run: |
+          echo ""
+          echo "=========================================="
+          echo "✅ 分析完成"
+          echo "=========================================="
+          if [ -f /tmp/repo-analysis-report.txt ]; then
+            echo ""
+            head -30 /tmp/repo-analysis-report.txt
+            echo ""
+            echo "..."
+            echo ""
+            tail -15 /tmp/repo-analysis-report.txt
+          fi
+          echo ""
+          echo "📧 完整报告已通过邮件发送"
