@@ -56,7 +56,6 @@ jobs:
           BEFORE_SIZE=$(du -sh .git | cut -f1)
           echo "BEFORE_SIZE=${BEFORE_SIZE}" >> $GITHUB_OUTPUT
           
-          # 统计历史记录数
           COUNT=$(git log --all --pretty=format: --name-only -- "${TARGET}" 2>/dev/null | sort -u | wc -l)
           echo "历史记录: ${COUNT}"
           echo "HISTORY_COUNT=${COUNT}" >> $GITHUB_OUTPUT
@@ -88,7 +87,6 @@ jobs:
           AFTER_SIZE=$(du -sh .git | cut -f1)
           echo "AFTER_SIZE=${AFTER_SIZE}" >> $GITHUB_OUTPUT
           
-          # 验证
           REMAINING=$(git log --all --pretty=format: --name-only -- "${TARGET}" 2>/dev/null | sort -u | wc -l)
           echo "剩余: ${REMAINING}"
           echo "REMAINING=${REMAINING}" >> $GITHUB_OUTPUT
@@ -96,12 +94,18 @@ jobs:
       - name: 推送
         if: github.event.inputs.force_push == 'true'
         run: |
+          # 先移除已存在的远程配置（BFG可能保留了）
+          git remote remove origin 2>/dev/null || true
+          
+          # 重新添加
           git remote add origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+          
           git config http.postBuffer 1073741824
           
           DEFAULT_BRANCH=$(git remote show origin 2>/dev/null | grep 'HEAD branch' | awk '{print $NF}' || echo "main")
+          echo "默认分支: ${DEFAULT_BRANCH}"
           
-          git push origin --force "$DEFAULT_BRANCH" 2>&1 | tail -3
+          git push origin --force "$DEFAULT_BRANCH" 2>&1 | tail -5
           git push origin --force --tags 2>&1 | tail -3
           
           echo "PUSH_SUCCESS=true" >> $GITHUB_OUTPUT
