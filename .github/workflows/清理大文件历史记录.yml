@@ -1,8 +1,9 @@
 # ============================================================
-# 工作流名称：分批清理大文件历史记录
-# 功能：分批处理大仓库，避免超时
+# 工作流名称：快速清理大文件历史记录
+# 策略：使用BFG直接删除大于阈值的blob对象
+# 先用 force_push=false 测试，确认效果后再推送
 # ============================================================
-name: 分批清理大文件历史记录
+name: 快速清理大文件历史记录
 
 on:
   workflow_dispatch:
@@ -12,13 +13,8 @@ on:
         required: false
         default: '10'
         type: string
-      batch_size:
-        description: '每批处理的文件数量（大仓库建议500-1000）'
-        required: false
-        default: '500'
-        type: string
       force_push:
-        description: '强制推送到远程仓库'
+        description: '强制推送到远程仓库（先设为false测试）'
         required: false
         default: false
         type: boolean
@@ -31,195 +27,114 @@ env:
   MAIL_TO: ${{ secrets.MAIL_TO }}
 
 jobs:
-  # ============================================================
-  # 作业1：分析阶段（快速扫描）
-  # ============================================================
-  analyze:
-    name: 分析大文件
+  clean-large-files:
+    name: 快速清理大文件
     runs-on: ubuntu-latest
-    outputs:
-      has_files: ${{ steps.analyze.outputs.HAS_FILES }}
-      delete_count: ${{ steps.analyze.outputs.DELETE_COUNT }}
-      batch_count: ${{ steps.analyze.outputs.BATCH_COUNT }}
-    steps:
-      - name: 检出仓库
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      
-      - name: 分析大文件
-        id: analyze
-        run: |
-          THRESHOLD="${{ github.event.inputs.size_threshold || '10' }}"
-          THRESHOLD_BYTES=$((THRESHOLD * 1024 * 1024))
-          BATCH_SIZE="${{ github.event.inputs.batch_size || '500' }}"
-          
-          echo "🔍 扫描阈值: ${THRESHOLD}MB"
-          echo "📦 批次大小: ${BATCH_SIZE}个文件/批"
-          
-          # 获取当前文件列表
-          git ls-tree -r HEAD --name-only | sort > /tmp/current-files.txt
-          
-          # 查找历史大文件（只找已删除的）
-          git rev-list --objects --all | \
-            git cat-file --batch-check='%(objecttype) %(objectsize) %(rest)' | \
-            awk -v threshold="$THRESHOLD_BYTES" '
-              /^blob/ && $2 > threshold {
-                printf "%s\t%s\n", $2, $3
-              }
-            ' | sort -t$'\t' -k2 -u > /tmp/all-large.txt
-          
-          # 筛选已删除的文件
-          > /tmp/to-delete.txt
-          while IFS=$'\t' read -r size path; do
-            if ! grep -qxF "$path" /tmp/current-files.txt; then
-              echo "$path" >> /tmp/to-delete.txt
-            fi
-          done < /tmp/all-large.txt
-          
-          DELETE_COUNT=$(wc -l < /tmp/to-delete.txt)
-          
-          if [ "$DELETE_COUNT" -eq 0 ]; then
-            echo "HAS_FILES=false" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-          
-          # 分批
-          split -l "$BATCH_SIZE" /tmp/to-delete.txt /tmp/batch_
-          BATCH_COUNT=$(ls /tmp/batch_* | wc -l)
-          
-          echo "HAS_FILES=true" >> $GITHUB_OUTPUT
-          echo "DELETE_COUNT=${DELETE_COUNT}" >> $GITHUB_OUTPUT
-          echo "BATCH_COUNT=${BATCH_COUNT}" >> $GITHUB_OUTPUT
-          
-          echo "📊 需清理: ${DELETE_COUNT} 个文件，分 ${BATCH_COUNT} 批处理"
-          
-          # 上传批次文件
-          mkdir -p /tmp/batches
-          cp /tmp/batch_* /tmp/batches/
-          cp /tmp/to-delete.txt /tmp/batches/
-      
-      - name: 上传批次文件
-        uses: actions/upload-artifact@v4
-        with:
-          name: file-batches
-          path: /tmp/batches
-          retention-days: 1
-
-  # ============================================================
-  # 作业2：分批清理（使用矩阵策略）
-  # ============================================================
-  clean-batch:
-    name: 清理批次
-    needs: analyze
-    if: needs.analyze.outputs.has_files == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 60  # 每批最多60分钟
-    strategy:
-      fail-fast: false
-      matrix:
-        batch: [1, 2, 3, 4, 5]  # 最多5批并行（可根据需要调整）
+    timeout-minutes: 360
+    permissions:
+      contents: write
     
     steps:
       - name: 检出仓库
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      
-      - name: 下载批次文件
-        uses: actions/download-artifact@v4
-        with:
-          name: file-batches
-          path: /tmp/batches
-      
-      - name: 执行清理
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 配置Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: 使用BFG清理大文件
         id: clean
         run: |
-          BATCH_FILE="/tmp/batches/batch_$(printf '%02d' ${{ matrix.batch }})"
+          export PYTHONUNBUFFERED=1
           
-          # 检查批次文件是否存在
-          if [ ! -f "$BATCH_FILE" ]; then
-            echo "✅ 批次 ${{ matrix.batch }} 不存在，跳过"
-            echo "SKIP=true" >> $GITHUB_OUTPUT
-            exit 0
-          fi
+          THRESHOLD="${{ github.event.inputs.size_threshold || '10' }}"
           
-          BATCH_COUNT=$(wc -l < "$BATCH_FILE")
-          echo "🔧 处理批次 ${{ matrix.batch }}: ${BATCH_COUNT} 个文件"
-          
-          # 安装工具
-          sudo apt-get update -qq && sudo apt-get install -y -qq git-filter-repo
-          
-          # 执行清理
-          git filter-repo \
-            --invert-paths \
-            --paths-from-file "$BATCH_FILE" \
-            --force
-          
-          echo "✅ 批次 ${{ matrix.batch }} 完成"
-          echo "SKIP=false" >> $GITHUB_OUTPUT
-      
-      - name: 优化仓库
-        if: steps.clean.outputs.SKIP != 'true'
-        run: |
-          rm -rf .git/objects/pack/tmp_pack_*
-          git gc --aggressive --prune=now
-          git repack -a -d -f --depth=50 --window=50
-      
-      - name: 推送批次
-        if: steps.clean.outputs.SKIP != 'true' && github.event.inputs.force_push == 'true'
-        run: |
-          git remote add origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
-          git config http.postBuffer 524288000
-          
-          # 只推送主分支
-          git push origin --force main || echo "推送失败，将在最终步骤统一处理"
+          echo "=========================================="
+          echo "阈值: ${THRESHOLD}MB"
+          echo "开始: $(date '+%H:%M:%S')"
+          echo "=========================================="
 
-  # ============================================================
-  # 作业3：最终优化和推送
-  # ============================================================
-  finalize:
-    name: 最终优化
-    needs: [analyze, clean-batch]
-    if: always() && needs.analyze.outputs.has_files == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
-    
-    steps:
-      - name: 检出仓库
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      
-      - name: 最终优化
-        run: |
-          echo "🧹 执行最终优化..."
-          
-          # 清理所有垃圾
-          rm -rf .git/objects/pack/tmp_pack_*
+          # 记录清理前大小
+          echo ""
+          echo "清理前 .git 大小:"
+          du -sh .git
+          BEFORE_SIZE=$(du -sh .git | cut -f1)
+          echo "BEFORE_SIZE=${BEFORE_SIZE}" >> $GITHUB_OUTPUT
+
+          # 保存当前文件列表用于验证
+          git ls-tree -r HEAD --name-only > /tmp/current-files.txt
+          echo "当前文件数: $(wc -l < /tmp/current-files.txt)"
+
+          # 下载BFG
+          echo ""
+          echo "下载 BFG..."
+          wget -q https://repo1.maven.org/maven2/com/madgag/bfg/1.14.0/bfg-1.14.0.jar -O /tmp/bfg.jar
+          echo "BFG 下载完成"
+
+          # 先扫描大文件数量
+          echo ""
+          echo "扫描大文件对象..."
+          THRESHOLD_BYTES=$((THRESHOLD * 1024 * 1024))
+          git rev-list --objects --all | \
+            git cat-file --batch-check='%(objecttype) %(objectsize) %(rest)' | \
+            awk -v t="$THRESHOLD_BYTES" '/^blob/ && $2>t {count++; size+=$2} END {
+              printf "大文件对象: %d 个, 总大小: %.2f MB\n", count, size/1024/1024
+            }'
+
+          # 执行BFG清理
+          echo ""
+          echo "执行 BFG 清理..."
+          java -jar /tmp/bfg.jar \
+            --strip-blobs-bigger-than "${THRESHOLD}M" \
+            --no-blob-protection \
+            . 2>&1 | grep -E "Deleted|Cleaned|commit|Total|size" || true
+
+          echo ""
+          echo "BFG 清理完成，清理引用..."
           git reflog expire --expire=now --all
-          git gc --aggressive --prune=now
-          git repack -a -d -f --depth=250 --window=250
-          git prune
+          git gc --prune=now --aggressive
+
+          # 记录清理后大小
+          echo ""
+          echo "清理后 .git 大小:"
+          du -sh .git
+          AFTER_SIZE=$(du -sh .git | cut -f1)
+          echo "AFTER_SIZE=${AFTER_SIZE}" >> $GITHUB_OUTPUT
+
+          # 检查当前文件是否完整
+          echo ""
+          echo "验证文件完整性..."
+          MISSING=0
+          while IFS= read -r f; do
+            [ ! -f "$f" ] && { echo "缺失: $f"; MISSING=$((MISSING+1)); }
+          done < /tmp/current-files.txt
           
-          # 显示最终大小
-          echo "📊 最终仓库大小："
-          git count-objects -vH
-      
-      - name: 最终推送
-        if: github.event.inputs.force_push == 'true'
+          if [ "$MISSING" -eq 0 ]; then
+            echo "所有文件完整"
+          else
+            echo "缺失 ${MISSING} 个文件!"
+          fi
+          echo "FILE_CHECK=${MISSING}" >> $GITHUB_OUTPUT
+          
+          echo "结束: $(date '+%H:%M:%S')"
+
+      - name: 推送
+        if: steps.clean.outputs.FILE_CHECK == '0' && github.event.inputs.force_push == 'true'
         run: |
+          echo "添加远程仓库..."
           git remote add origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
-          git config http.postBuffer 1073741824  # 1GB
+          git config http.postBuffer 1073741824
           
-          # 推送主分支
-          git push origin --force main
-          
-          # 推送其他分支和标签
+          echo "推送..."
           git push origin --force --all
           git push origin --force --tags
-      
-      - name: 发送完成报告
+          echo "推送完成"
+
+      - name: 发送邮件报告
         if: always()
         uses: dawidd6/action-send-mail@v3
         with:
@@ -227,16 +142,25 @@ jobs:
           server_port: ${{ secrets.MAIL_PORT }}
           username: ${{ secrets.MAIL_USERNAME }}
           password: ${{ secrets.MAIL_PASSWORD }}
-          subject: "✅ 大文件清理完成 - ${{ github.repository }}"
+          subject: "大文件清理 - ${{ github.repository }} - ${{ steps.clean.outputs.AFTER_SIZE || 'N/A' }}"
           to: ${{ secrets.MAIL_TO }}
           from: ${{ secrets.MAIL_USERNAME }}
           body: |
-            仓库 ${{ github.repository }} 的大文件清理已完成。
+            仓库: ${{ github.repository }}
+            时间: $(date '+%Y-%m-%d %H:%M:%S')
             
-            清理统计：
-            - 总文件数: ${{ needs.analyze.outputs.delete_count }}
-            - 分批数: ${{ needs.analyze.outputs.batch_count }}
-            - 推送状态: ${{ github.event.inputs.force_push == 'true' && '已推送' || '未推送' }}
-            
-            请所有协作者重新克隆仓库。
+            清理前: ${{ steps.clean.outputs.BEFORE_SIZE }}
+            清理后: ${{ steps.clean.outputs.AFTER_SIZE }}
+            阈值: ${{ github.event.inputs.size_threshold }}MB
+            文件完整性: ${{ steps.clean.outputs.FILE_CHECK == '0' && '正常' || '有缺失!' }}
           priority: normal
+
+      - name: 摘要
+        run: |
+          echo ""
+          echo "=========================================="
+          echo "完成"
+          echo "清理前: ${{ steps.clean.outputs.BEFORE_SIZE }}"
+          echo "清理后: ${{ steps.clean.outputs.AFTER_SIZE }}"
+          echo "文件完整性: ${{ steps.clean.outputs.FILE_CHECK == '0' && '正常' || '有缺失!' }}"
+          echo "=========================================="
